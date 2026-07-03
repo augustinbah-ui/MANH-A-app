@@ -1120,18 +1120,51 @@ function LivreurApp({ user, onLogout }) {
    ROOT
 =========================================================== */
 
+const SESSION_KEY = "manhia_session";
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(user) {
+  try {
+    if (user) {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+    }
+  } catch {
+    // stockage indisponible (mode privé, etc.) — la session ne persistera simplement pas
+  }
+}
+
 export default function ManhiaPrototype() {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => loadSession());
+
+  const handleAuth = (u) => {
+    setUser(u);
+    saveSession(u);
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    saveSession(null);
+  };
 
   return (
     <div className="min-h-screen" style={{ background: C.sand }}>
       <div className="max-w-md mx-auto shadow-2xl min-h-screen" style={{ background: C.sand }}>
         {!user ? (
-          <AuthScreen onAuth={setUser} />
+          <AuthScreen onAuth={handleAuth} />
         ) : user.role === "client" ? (
-          <ClientApp user={user} onLogout={() => setUser(null)} />
+          <ClientApp user={user} onLogout={handleLogout} />
         ) : (
-          <LivreurApp user={user} onLogout={() => setUser(null)} />
+          <LivreurApp user={user} onLogout={handleLogout} />
         )}
       </div>
     </div>
