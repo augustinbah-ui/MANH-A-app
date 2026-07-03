@@ -6,6 +6,7 @@ import {
   Clock, MapPin, ShieldCheck
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
+import LocationPickerModal, { haversineDistance } from "./LocationPicker";
 
 /* ===========================================================
    MANHÏA — prototype fonctionnel (Supabase)
@@ -34,9 +35,9 @@ const NEIGHBORHOODS = [
   "Sainte-Rita", "Zogbo", "Vêdoko", "Gbégamey", "Aïbatin",
 ];
 
-const BASE_PRICE = 500;
-const PRICE_PER_STOP = 400;
-const PRICE_PER_EXTRA_COURSE = 700;
+const BASE_PRICE = 300;
+const PRICE_PER_KM = 70;
+const PRICE_PER_EXTRA_COURSE_KM_BONUS = 0; // réservé pour ajustement futur
 
 function uid(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -82,6 +83,7 @@ async function createCourse(course) {
       item: course.item,
       stops: course.stops,
       price: course.price,
+      distance_km: course.distanceKm ?? null,
       status: "en_attente",
       history: course.history,
     })
@@ -103,6 +105,7 @@ function mapCourseFromDb(row) {
     item: row.item,
     stops: row.stops,
     price: Number(row.price),
+    distanceKm: row.distance_km != null ? Number(row.distance_km) : null,
     status: row.status,
     history: row.history || [],
     createdAt: new Date(row.created_at).getTime(),
@@ -429,41 +432,46 @@ function AuthScreen({ onAuth }) {
    CLIENT APP
 =========================================================== */
 
-function computePrice(stops, mode) {
-  if (mode === "tournee") {
-    const extraStops = Math.max(0, stops.length - 2);
-    return BASE_PRICE + extraStops * PRICE_PER_STOP;
-  } else {
-    const extraCourses = Math.max(0, stops.length - 2);
-    return BASE_PRICE + extraCourses * PRICE_PER_EXTRA_COURSE;
+function computeTotalDistance(stops) {
+  // stops: array of {lat, lng, label}
+  let total = 0;
+  for (let i = 0; i < stops.length - 1; i++) {
+    total += haversineDistance(stops[i], stops[i + 1]);
   }
+  return total;
+}
+
+function computePrice(stops, mode) {
+  const distanceKm = computeTotalDistance(stops);
+  const distancePrice = Math.round(distanceKm * PRICE_PER_KM);
+  const price = BASE_PRICE + distancePrice;
+  return { price, distanceKm };
 }
 
 function NewCourseFlow({ user, onCreated, onCancel }) {
-  const [step, setStep] = useState("mode"); // mode | build | confirm
+  const [step, setStep] = useState("mode"); // mode | build
   const [mode, setMode] = useState("tournee");
-  const [stops, setStops] = useState([NEIGHBORHOODS[3], NEIGHBORHOODS[2]]);
+  const [stops, setStops] = useState([null, null]); // {label, lat, lng} | null
   const [item, setItem] = useState("Petit colis");
   const [posting, setPosting] = useState(false);
+  const [pickerIndex, setPickerIndex] = useState(null); // index en cours d'édition sur la carte
 
   const addStop = () => {
-    const remaining = NEIGHBORHOODS.filter((n) => !stops.includes(n));
-    if (remaining.length === 0) return;
-    setStops([...stops, remaining[0]]);
+    if (stops.length >= 5) return;
+    const next = [...stops];
+    next.splice(next.length - 1, 0, null); // insère avant la destination finale
+    setStops(next);
   };
   const removeStop = (i) => {
     if (stops.length <= 2) return;
     setStops(stops.filter((_, idx) => idx !== i));
   };
-  const updateStop = (i, val) => {
-    const next = [...stops];
-    next[i] = val;
-    setStops(next);
-  };
 
-  const price = computePrice(stops, mode);
+  const allSet = stops.every((s) => s && s.lat);
+  const { price, distanceKm } = allSet ? computePrice(stops, mode) : { price: 0, distanceKm: 0 };
 
   const confirmBooking = async () => {
+    if (!allSet) return;
     setPosting(true);
     try {
       const created = await createCourse({
@@ -474,6 +482,7 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
         item,
         stops,
         price,
+        distanceKm,
         history: [{ label: "Course créée", at: Date.now() }],
       });
       setPosting(false);
@@ -540,37 +549,37 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
 
       <div className="px-5 mt-4">
         <div className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${C.line}` }}>
-          {stops.map((s, i) => (
-            <div key={i}>
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ background: i === 0 ? C.lagoon : i === stops.length - 1 ? C.clay : C.zem }}
-                />
-                <div className="flex-1">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
-                    {i === 0 ? "Départ" : i === stops.length - 1 ? "Arrivée" : `Arrêt ${i}`}
-                    {mode === "multiple" && i > 0 ? ` · Course ${i}` : ""}
-                  </p>
-                  <select
-                    value={s}
-                    onChange={(e) => updateStop(i, e.target.value)}
-                    className="text-sm bg-transparent outline-none w-full"
-                    style={{ color: C.ink, fontFamily: FONT_BODY }}
+          {stops.map((s, i) => {
+            const isFirst = i === 0;
+            const isLast = i === stops.length - 1;
+            const dotColor = isFirst ? C.lagoon : isLast ? C.clay : C.zem;
+            return (
+              <div key={i}>
+                <div className="flex items-center gap-3">
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: dotColor }} />
+                  <button
+                    onClick={() => setPickerIndex(i)}
+                    className="flex-1 text-left"
                   >
-                    {NEIGHBORHOODS.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                </div>
-                {i > 0 && i === stops.length - 1 && stops.length > 2 && (
-                  <button onClick={() => removeStop(i)}>
-                    <Trash2 size={14} color={C.inkSoft} />
+                    <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+                      {isFirst ? "Départ" : isLast ? "Arrivée" : `Arrêt ${i}`}
+                      {mode === "multiple" && i > 0 ? ` · Course ${i}` : ""}
+                    </p>
+                    <p className="text-sm truncate" style={{ color: s ? C.ink : C.inkSoft, fontFamily: FONT_BODY }}>
+                      {s ? s.label : "Toucher pour choisir sur la carte"}
+                    </p>
                   </button>
-                )}
+                  {!isFirst && !isLast && (
+                    <button onClick={() => removeStop(i)}>
+                      <Trash2 size={14} color={C.inkSoft} />
+                    </button>
+                  )}
+                </div>
+                {i < stops.length - 1 && <div className="h-px my-3" style={{ background: C.line }} />}
               </div>
-              {i < stops.length - 1 && <div className="h-px my-3" style={{ background: C.line }} />}
-            </div>
-          ))}
-          <button onClick={addStop} className="w-full flex items-center justify-center gap-1.5 mt-3 py-2 rounded-xl" style={{ border: `1px dashed ${C.line}` }}>
+            );
+          })}
+          <button onClick={addStop} disabled={stops.length >= 5} className="w-full flex items-center justify-center gap-1.5 mt-3 py-2 rounded-xl" style={{ border: `1px dashed ${C.line}`, opacity: stops.length >= 5 ? 0.4 : 1 }}>
             <Plus size={13} color={C.inkSoft} />
             <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
               {mode === "multiple" ? "Ajouter une course" : "Ajouter un arrêt"}
@@ -607,9 +616,11 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[11px]" style={{ color: "#BFE0D6", fontFamily: FONT_BODY }}>
-                {mode === "multiple" ? "Total des courses" : "Prix estimé"}
+                {allSet ? "Prix estimé" : "Choisissez tous les points"}
               </p>
-              <p className="text-2xl font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>{price.toLocaleString()} FCFA</p>
+              <p className="text-2xl font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>
+                {allSet ? `${price.toLocaleString()} FCFA` : "—"}
+              </p>
             </div>
             <ShieldCheck size={26} color={C.zem} />
           </div>
@@ -617,19 +628,41 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
           <div className="flex justify-between text-[11px]" style={{ fontFamily: FONT_BODY }}>
             <span style={{ color: "#BFE0D6" }}>Base · {BASE_PRICE} FCFA</span>
             <span style={{ color: C.zem }}>
-              + {mode === "multiple" ? PRICE_PER_EXTRA_COURSE : PRICE_PER_STOP} FCFA / {mode === "multiple" ? "course suppl." : "arrêt suppl."}
+              {allSet ? `${distanceKm.toFixed(1)} km · ${PRICE_PER_KM} FCFA/km` : "en attente des points"}
             </span>
           </div>
         </div>
       </div>
 
       <div className="px-5 mt-5">
-        <PrimaryButton onClick={confirmBooking} disabled={posting}>
-          {posting ? "Publication..." : "Confirmer et publier la course"}
+        <PrimaryButton onClick={confirmBooking} disabled={posting || !allSet}>
+          {posting ? "Publication..." : !allSet ? "Complétez tous les points" : "Confirmer et publier la course"}
         </PrimaryButton>
       </div>
+
+      {pickerIndex !== null && (
+        <LocationPickerModal
+          label={pickerIndex === 0 ? "Point de départ" : pickerIndex === stops.length - 1 ? "Point d'arrivée" : `Arrêt ${pickerIndex}`}
+          color={pickerIndex === 0 ? "depart" : pickerIndex === stops.length - 1 ? "arrivee" : "arret"}
+          initialPosition={stops[pickerIndex]}
+          onClose={() => setPickerIndex(null)}
+          onConfirm={(place) => {
+            const next = [...stops];
+            next[pickerIndex] = place;
+            setStops(next);
+            setPickerIndex(null);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function shortLabel(stop) {
+  if (!stop) return "";
+  const text = typeof stop === "string" ? stop : stop.label || "";
+  const parts = text.split(",");
+  return parts.slice(0, 2).join(",").trim() || text;
 }
 
 function CourseCard({ course, highlight }) {
@@ -653,10 +686,15 @@ function CourseCard({ course, highlight }) {
         <span className="text-sm font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{course.price.toLocaleString()} F</span>
       </div>
       <RouteDots />
-      <div className="flex justify-between text-xs mt-1" style={{ fontFamily: FONT_BODY }}>
-        <span style={{ color: C.ink }}>{course.stops[0]}</span>
-        <span style={{ color: C.ink }}>{course.stops[course.stops.length - 1]}</span>
+      <div className="flex justify-between text-xs mt-1 gap-2" style={{ fontFamily: FONT_BODY }}>
+        <span style={{ color: C.ink }} className="truncate">{shortLabel(course.stops[0])}</span>
+        <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(course.stops[course.stops.length - 1])}</span>
       </div>
+      {course.distanceKm != null && (
+        <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          {course.distanceKm.toFixed(1)} km
+        </p>
+      )}
       {course.stops.length > 2 && (
         <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
           + {course.stops.length - 2} arrêt(s) intermédiaire(s)
@@ -943,9 +981,9 @@ function LivreurApp({ user, onLogout }) {
                         <span className="text-sm font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{c.price.toLocaleString()} F</span>
                       </div>
                       <RouteDots />
-                      <div className="flex justify-between text-xs mt-1" style={{ fontFamily: FONT_BODY }}>
-                        <span style={{ color: C.ink }}>{c.stops[0]}</span>
-                        <span style={{ color: C.ink }}>{c.stops[c.stops.length - 1]}</span>
+                      <div className="flex justify-between text-xs mt-1 gap-2" style={{ fontFamily: FONT_BODY }}>
+                        <span style={{ color: C.ink }} className="truncate">{shortLabel(c.stops[0])}</span>
+                        <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(c.stops[c.stops.length - 1])}</span>
                       </div>
                       <p className="text-[11px] mt-2" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
                         Client : {c.clientName} · {c.clientPhone}
@@ -983,9 +1021,9 @@ function LivreurApp({ user, onLogout }) {
                         <span className="text-lg font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{c.price.toLocaleString()} F</span>
                       </div>
                       <RouteDots />
-                      <div className="flex justify-between text-xs mt-1" style={{ fontFamily: FONT_BODY }}>
-                        <span style={{ color: C.ink }}>{c.stops[0]}</span>
-                        <span style={{ color: C.ink }}>{c.stops[c.stops.length - 1]}</span>
+                      <div className="flex justify-between text-xs mt-1 gap-2" style={{ fontFamily: FONT_BODY }}>
+                        <span style={{ color: C.ink }} className="truncate">{shortLabel(c.stops[0])}</span>
+                        <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(c.stops[c.stops.length - 1])}</span>
                       </div>
                       {c.stops.length > 2 && (
                         <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
@@ -1019,7 +1057,7 @@ function LivreurApp({ user, onLogout }) {
                   <div key={c.id} className="rounded-xl p-3 flex items-center justify-between" style={{ background: C.white, border: `1px solid ${C.line}` }}>
                     <div className="flex items-center gap-2">
                       <Package size={14} color={C.inkSoft} />
-                      <span className="text-xs" style={{ color: C.ink, fontFamily: FONT_BODY }}>{c.stops[0]} → {c.stops[c.stops.length - 1]}</span>
+                      <span className="text-xs" style={{ color: C.ink, fontFamily: FONT_BODY }}>{shortLabel(c.stops[0])} → {shortLabel(c.stops[c.stops.length - 1])}</span>
                     </div>
                     <span className="text-xs font-bold" style={{ color: C.lagoon, fontFamily: FONT_DISPLAY }}>
                       +{Math.round(c.price * 0.85).toLocaleString()} F
