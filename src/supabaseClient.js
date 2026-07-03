@@ -1,1 +1,6 @@
-<html><head><meta content="text/html; charset=UTF-8" http-equiv="content-type"><title>Gmail – Erreur de téléchargement</title></head><body>Pour des raisons de sécurité, Gmail ne vous autorise pas à utiliser ce type de fichier, car cela enfreint la politique de Google en matière de fichiers exécutables ou d&#39;archives.</body></html>
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+export const supabase = createClient(supabaseUrl, supabaseKey);
