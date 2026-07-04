@@ -3,7 +3,7 @@ import {
   Package, Star, ChevronRight, Search, Home, User, ListOrdered,
   Wallet, Bell, Navigation, CheckCircle2, Phone, Power, Plus,
   GitBranch, Layers, Trash2, LogOut, Eye, EyeOff, ArrowLeft,
-  Clock, MapPin, ShieldCheck
+  Clock, MapPin, ShieldCheck, Check, Camera, Receipt
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import LocationPickerModal, { haversineDistance } from "./LocationPicker";
@@ -84,6 +84,8 @@ async function createCourse(course) {
       stops: course.stops,
       price: course.price,
       distance_km: course.distanceKm ?? null,
+      needs_purchase: course.needsPurchase || false,
+      purchase_budget: course.needsPurchase ? course.purchaseBudget : null,
       status: "en_attente",
       history: course.history,
     })
@@ -106,6 +108,10 @@ function mapCourseFromDb(row) {
     stops: row.stops,
     price: Number(row.price),
     distanceKm: row.distance_km != null ? Number(row.distance_km) : null,
+    needsPurchase: row.needs_purchase || false,
+    purchaseBudget: row.purchase_budget != null ? Number(row.purchase_budget) : null,
+    purchaseActual: row.purchase_actual != null ? Number(row.purchase_actual) : null,
+    receiptPhotoUrl: row.receipt_photo_url || null,
     status: row.status,
     history: row.history || [],
     createdAt: new Date(row.created_at).getTime(),
@@ -124,9 +130,22 @@ async function updateCourse(courseId, patch) {
   if (patch.livreurId !== undefined) dbPatch.livreur_id = patch.livreurId;
   if (patch.livreurName !== undefined) dbPatch.livreur_name = patch.livreurName;
   if (patch.history) dbPatch.history = patch.history;
+  if (patch.purchaseActual !== undefined) dbPatch.purchase_actual = patch.purchaseActual;
+  if (patch.receiptPhotoUrl !== undefined) dbPatch.receipt_photo_url = patch.receiptPhotoUrl;
   const { error } = await supabase.from("courses").update(dbPatch).eq("id", courseId);
   if (error) throw error;
 }
+
+async function uploadReceiptPhoto(courseId, file) {
+  const ext = file.name.split(".").pop() || "jpg";
+  const path = `${courseId}_${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from("receipts").upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from("receipts").getPublicUrl(path);
+  return data.publicUrl;
+}
+
+
 
 /* ---------------- small UI atoms ---------------- */
 
@@ -453,6 +472,8 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
   const [mode, setMode] = useState("tournee");
   const [stops, setStops] = useState([null, null]); // {label, lat, lng} | null
   const [item, setItem] = useState("Petit colis");
+  const [needsPurchase, setNeedsPurchase] = useState(false);
+  const [purchaseBudget, setPurchaseBudget] = useState("2000");
   const [posting, setPosting] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(null); // index en cours d'édition sur la carte
 
@@ -469,6 +490,8 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
 
   const allSet = stops.every((s) => s && s.lat);
   const { price, distanceKm } = allSet ? computePrice(stops, mode) : { price: 0, distanceKm: 0 };
+  const budgetValue = needsPurchase ? Math.max(0, parseInt(purchaseBudget, 10) || 0) : 0;
+  const totalToPay = price + budgetValue;
 
   const confirmBooking = async () => {
     if (!allSet) return;
@@ -483,6 +506,8 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
         stops,
         price,
         distanceKm,
+        needsPurchase,
+        purchaseBudget: budgetValue,
         history: [{ label: "Course créée", at: Date.now() }],
       });
       setPosting(false);
@@ -611,26 +636,77 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
         </div>
       </div>
 
+      <div className="px-5 mt-5">
+        <button
+          onClick={() => setNeedsPurchase((v) => !v)}
+          className="w-full rounded-2xl p-4 flex items-start gap-3 text-left"
+          style={{ background: C.white, border: `2px solid ${needsPurchase ? C.zem : C.line}` }}
+        >
+          <div
+            className="w-5 h-5 rounded-md shrink-0 mt-0.5 flex items-center justify-center"
+            style={{ background: needsPurchase ? C.zem : C.sandDeep, border: `1px solid ${needsPurchase ? C.zem : C.line}` }}
+          >
+            {needsPurchase && <Check size={13} color={C.ink} strokeWidth={3} />}
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>
+              Le livreur doit acheter quelque chose pour moi
+            </p>
+            <p className="text-xs mt-1 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Ex : médicaments à la pharmacie, articles au supermarché. Le livreur avance l'argent, vous êtes remboursé ou réglez la différence à la livraison.
+            </p>
+          </div>
+        </button>
+
+        {needsPurchase && (
+          <div className="mt-3 rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${C.line}` }}>
+            <label className="text-[11px] font-bold uppercase tracking-[0.1em] mb-1.5 block" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+              Budget estimé pour l'achat
+            </label>
+            <div className="flex items-center gap-2 rounded-xl px-3.5 py-3" style={{ background: C.sand, border: `1px solid ${C.line}` }}>
+              <input
+                type="number"
+                inputMode="numeric"
+                value={purchaseBudget}
+                onChange={(e) => setPurchaseBudget(e.target.value)}
+                className="flex-1 bg-transparent outline-none text-sm"
+                style={{ color: C.ink, fontFamily: FONT_BODY }}
+              />
+              <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>FCFA</span>
+            </div>
+            <p className="text-[10px] mt-2 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Ce montant est mis de côté pour l'achat. Le montant réel sera ajusté après la course, avec le reçu du livreur comme preuve.
+            </p>
+          </div>
+        )}
+      </div>
+
       <div className="px-5 mt-6">
         <div className="rounded-2xl p-4" style={{ background: C.lagoonDeep }}>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[11px]" style={{ color: "#BFE0D6", fontFamily: FONT_BODY }}>
-                {allSet ? "Prix estimé" : "Choisissez tous les points"}
+                {allSet ? "Total à payer" : "Choisissez tous les points"}
               </p>
               <p className="text-2xl font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>
-                {allSet ? `${price.toLocaleString()} FCFA` : "—"}
+                {allSet ? `${totalToPay.toLocaleString()} FCFA` : "—"}
               </p>
             </div>
             <ShieldCheck size={26} color={C.zem} />
           </div>
           <div className="h-px my-3" style={{ background: "#2C7166" }} />
           <div className="flex justify-between text-[11px]" style={{ fontFamily: FONT_BODY }}>
-            <span style={{ color: "#BFE0D6" }}>Base · {BASE_PRICE} FCFA</span>
+            <span style={{ color: "#BFE0D6" }}>Trajet · {allSet ? price.toLocaleString() : "—"} FCFA</span>
             <span style={{ color: C.zem }}>
               {allSet ? `${distanceKm.toFixed(1)} km · ${PRICE_PER_KM} FCFA/km` : "en attente des points"}
             </span>
           </div>
+          {needsPurchase && (
+            <div className="flex justify-between text-[11px] mt-1.5" style={{ fontFamily: FONT_BODY }}>
+              <span style={{ color: "#BFE0D6" }}>Dépôt achat</span>
+              <span style={{ color: C.zem }}>{budgetValue.toLocaleString()} FCFA (estimé)</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -706,6 +782,32 @@ function CourseCard({ course, highlight }) {
             <User size={13} color={C.inkSoft} />
           </div>
           <span className="text-xs font-semibold" style={{ color: C.ink, fontFamily: FONT_BODY }}>{course.livreurName}</span>
+        </div>
+      )}
+      {course.needsPurchase && (
+        <div className="mt-3 pt-3 rounded-xl" style={{ borderTop: `1px solid ${C.line}` }}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide mb-1" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+            Achat pour vous
+          </p>
+          {course.purchaseActual == null ? (
+            <p className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Dépôt de {(course.purchaseBudget || 0).toLocaleString()} FCFA — en attente de l'achat
+            </p>
+          ) : (
+            (() => {
+              const diff = course.purchaseActual - (course.purchaseBudget || 0);
+              return (
+                <p className="text-xs" style={{ color: diff > 0 ? C.clay : C.lagoon, fontFamily: FONT_BODY }}>
+                  Dépensé : {course.purchaseActual.toLocaleString()} FCFA —{" "}
+                  {diff > 0
+                    ? `${diff.toLocaleString()} FCFA à régler`
+                    : diff < 0
+                    ? `${Math.abs(diff).toLocaleString()} FCFA à rembourser`
+                    : "montant exact"}
+                </p>
+              );
+            })()
+          )}
         </div>
       )}
     </div>
@@ -860,6 +962,109 @@ function ClientApp({ user, onLogout }) {
    LIVREUR APP
 =========================================================== */
 
+function PurchaseDeclarationModal({ course, onClose, onSubmit }) {
+  const [amount, setAmount] = useState(String(course.purchaseBudget || ""));
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const handlePhotoChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoFile(file);
+    setPhotoPreview(URL.createObjectURL(file));
+  };
+
+  const submit = async () => {
+    const value = parseInt(amount, 10);
+    if (!value || value <= 0) {
+      setError("Indiquez le montant exact dépensé.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+    try {
+      let photoUrl = null;
+      if (photoFile) {
+        photoUrl = await uploadReceiptPhoto(course.id, photoFile);
+      }
+      await onSubmit(value, photoUrl);
+    } catch (e) {
+      setError("Erreur lors de l'envoi. Réessayez.");
+      setSubmitting(false);
+    }
+  };
+
+  const budget = course.purchaseBudget || 0;
+  const value = parseInt(amount, 10) || 0;
+  const diff = value - budget;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white, maxHeight: "88vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Déclarer l'achat</h2>
+          <button onClick={onClose}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        </div>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Budget prévu par le client : <strong>{budget.toLocaleString()} FCFA</strong>
+        </p>
+
+        <label className="text-[11px] font-bold uppercase tracking-[0.1em] mb-1.5 block" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+          Montant réellement dépensé
+        </label>
+        <div className="flex items-center gap-2 rounded-xl px-3.5 py-3 mb-1" style={{ background: C.sand, border: `1px solid ${C.line}` }}>
+          <Receipt size={16} color={C.inkSoft} />
+          <input
+            type="number"
+            inputMode="numeric"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="flex-1 bg-transparent outline-none text-sm"
+            style={{ color: C.ink, fontFamily: FONT_BODY }}
+          />
+          <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>FCFA</span>
+        </div>
+
+        {value > 0 && (
+          <p className="text-xs mb-4" style={{ color: diff > 0 ? C.clay : C.lagoon, fontFamily: FONT_BODY }}>
+            {diff > 0
+              ? `Le client devra régler ${diff.toLocaleString()} FCFA de plus à la livraison.`
+              : diff < 0
+              ? `${Math.abs(diff).toLocaleString()} FCFA seront à rembourser au client.`
+              : "Montant exactement conforme au budget prévu."}
+          </p>
+        )}
+
+        <label className="text-[11px] font-bold uppercase tracking-[0.1em] mb-1.5 block" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+          Photo du reçu (recommandé)
+        </label>
+        <label
+          className="flex flex-col items-center justify-center gap-2 rounded-xl py-6 mb-4 cursor-pointer"
+          style={{ background: C.sand, border: `1px dashed ${C.line}` }}
+        >
+          {photoPreview ? (
+            <img src={photoPreview} alt="Reçu" className="max-h-40 rounded-lg" />
+          ) : (
+            <>
+              <Camera size={22} color={C.inkSoft} />
+              <span className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Prendre une photo du reçu</span>
+            </>
+          )}
+          <input type="file" accept="image/*" capture="environment" onChange={handlePhotoChange} className="hidden" />
+        </label>
+
+        {error && <p className="text-xs mb-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+
+        <PrimaryButton onClick={submit} disabled={submitting}>
+          {submitting ? "Envoi..." : "Confirmer et terminer la livraison"}
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
 function LivreurApp({ user, onLogout }) {
   const [tab, setTab] = useState("home");
   const [online, setOnline] = useState(true);
@@ -868,6 +1073,7 @@ function LivreurApp({ user, onLogout }) {
   const [balance, setBalance] = useState(user.balance || 0);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
+  const [purchaseCourse, setPurchaseCourse] = useState(null); // course en attente de déclaration d'achat
 
   const load = useCallback(async () => {
     const all = await fetchAllCourses();
@@ -902,25 +1108,45 @@ function LivreurApp({ user, onLogout }) {
     }
   };
 
-  const advanceCourse = async (course) => {
-    const next = course.status === "acceptee" ? "en_cours" : "livree";
-    const labels = { en_cours: "Colis récupéré, en route", livree: "Livraison confirmée" };
+  const finalizeDelivery = async (course) => {
     setBusyId(course.id);
     try {
       await updateCourse(course.id, {
-        status: next,
-        history: [...course.history, { label: labels[next], at: Date.now() }],
+        status: "livree",
+        history: [...course.history, { label: "Livraison confirmée", at: Date.now() }],
       });
-      if (next === "livree") {
-        const commission = Math.round(course.price * 0.15);
-        const gain = course.price - commission;
-        const newBalance = balance + gain;
-        setBalance(newBalance);
-        await updateUserBalance(user.id, newBalance);
-      }
+      const commission = Math.round(course.price * 0.15);
+      const gain = course.price - commission;
+      const newBalance = balance + gain;
+      setBalance(newBalance);
+      await updateUserBalance(user.id, newBalance);
     } finally {
       setBusyId(null);
       load();
+    }
+  };
+
+  const advanceCourse = async (course) => {
+    if (course.status === "acceptee") {
+      // récupéré → en cours
+      setBusyId(course.id);
+      try {
+        await updateCourse(course.id, {
+          status: "en_cours",
+          history: [...course.history, { label: "Colis récupéré, en route", at: Date.now() }],
+        });
+      } finally {
+        setBusyId(null);
+        load();
+      }
+      return;
+    }
+    // en_cours → livrée
+    if (course.needsPurchase) {
+      // ouvre le modal de déclaration du montant réel avant de finaliser
+      setPurchaseCourse(course);
+    } else {
+      await finalizeDelivery(course);
     }
   };
 
@@ -1112,6 +1338,23 @@ function LivreurApp({ user, onLogout }) {
         )}
       </div>
       <BottomNav tab={tab} setTab={setTab} tone="clay" />
+
+      {purchaseCourse && (
+        <PurchaseDeclarationModal
+          course={purchaseCourse}
+          onClose={() => setPurchaseCourse(null)}
+          onSubmit={async (actual, photoUrl) => {
+            await updateCourse(purchaseCourse.id, {
+              purchaseActual: actual,
+              receiptPhotoUrl: photoUrl,
+              history: [...purchaseCourse.history, { label: `Achat déclaré : ${actual.toLocaleString()} FCFA`, at: Date.now() }],
+            });
+            const refreshed = { ...purchaseCourse, purchaseActual: actual };
+            setPurchaseCourse(null);
+            await finalizeDelivery(refreshed);
+          }}
+        />
+      )}
     </div>
   );
 }
