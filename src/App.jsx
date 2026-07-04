@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Package, Star, ChevronRight, Search, Home, User, ListOrdered,
   Wallet, Bell, Navigation, CheckCircle2, Phone, Power, Plus,
@@ -61,6 +61,7 @@ async function createUser(user) {
       role: user.role,
       rating: 5.0,
       balance: 0,
+      verification_status: user.role === "livreur" ? "en_attente" : "non_requis",
     })
     .select()
     .single();
@@ -200,6 +201,42 @@ async function markPasswordRequestTreated(id) {
 async function resetUserPassword(phone, newPassword) {
   const { error } = await supabase.from("users").update({ password: newPassword }).eq("phone", phone);
   if (error) throw error;
+}
+
+async function uploadIdentityPhoto(userId, file, kind) {
+  const ext = file.name.split(".").pop() || "jpg";
+  const path = `${userId}_${kind}_${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from("identity-docs").upload(path, file, { upsert: true });
+  if (error) throw error;
+  const { data } = supabase.storage.from("identity-docs").getPublicUrl(path);
+  return data.publicUrl;
+}
+
+async function submitVerification(userId, idPhotoUrl, selfiePhotoUrl) {
+  const { error } = await supabase
+    .from("users")
+    .update({
+      verification_status: "en_attente",
+      id_photo_url: idPhotoUrl,
+      selfie_photo_url: selfiePhotoUrl,
+    })
+    .eq("id", userId);
+  if (error) throw error;
+}
+
+async function fetchPendingLivreurs() {
+  const { data, error } = await supabase
+    .from("users")
+    .select("*")
+    .eq("role", "livreur")
+    .in("verification_status", ["en_attente", "verifie", "refuse"])
+    .order("created_at", { ascending: false });
+  if (error) return [];
+  return data;
+}
+
+async function setLivreurVerificationStatus(userId, status) {
+  await supabase.from("users").update({ verification_status: status }).eq("id", userId);
 }
 
 
@@ -390,6 +427,7 @@ function AuthScreen({ onAuth }) {
           role: created.role,
           rating: created.rating,
           balance: created.balance,
+          verificationStatus: created.verification_status,
         });
       } else {
         if (!existing) {
@@ -410,6 +448,7 @@ function AuthScreen({ onAuth }) {
           role: existing.role,
           rating: existing.rating,
           balance: existing.balance,
+          verificationStatus: existing.verification_status,
         });
       }
     } catch (e) {
@@ -600,7 +639,6 @@ function computePrice(stops, mode) {
 }
 
 function NewCourseFlow({ user, onCreated, onCancel }) {
-  const [step, setStep] = useState("mode"); // mode | build
   const [mode, setMode] = useState("tournee");
   const [stops, setStops] = useState([null, null]); // {label, lat, lng} | null
   const [item, setItem] = useState("Petit colis");
@@ -608,6 +646,7 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
   const [purchaseBudget, setPurchaseBudget] = useState("2000");
   const [posting, setPosting] = useState(false);
   const [pickerIndex, setPickerIndex] = useState(null); // index en cours d'édition sur la carte
+  const [showModeChoice, setShowModeChoice] = useState(false);
 
   const addStop = () => {
     if (stops.length >= 5) return;
@@ -624,6 +663,7 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
   const { price, distanceKm } = allSet ? computePrice(stops, mode) : { price: 0, distanceKm: 0 };
   const budgetValue = needsPurchase ? Math.max(0, parseInt(purchaseBudget, 10) || 0) : 0;
   const totalToPay = price + budgetValue;
+  const isSimpleTrip = stops.length === 2;
 
   const confirmBooking = async () => {
     if (!allSet) return;
@@ -649,59 +689,12 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
     }
   };
 
-  if (step === "mode") {
-    return (
-      <div className="pb-6">
-        <TopBar title="Nouvelle course" onBack={onCancel} />
-        <p className="text-xs px-5 mt-3" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-          Plusieurs destinations ? Choisissez comment organiser votre course.
-        </p>
-        <div className="px-5 mt-5 space-y-3">
-          <button
-            onClick={() => { setMode("tournee"); setStep("build"); }}
-            className="w-full text-left rounded-2xl p-4"
-            style={{ background: C.white, border: `2px solid ${C.lagoon}` }}
-          >
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${C.lagoon}1A` }}>
-                <GitBranch size={18} color={C.lagoon} />
-              </div>
-              <div>
-                <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Une tournée, plusieurs arrêts</p>
-                <p className="text-xs mt-1 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-                  Un seul livreur passe par tous vos points. Un seul prix, un seul suivi.
-                </p>
-              </div>
-            </div>
-          </button>
-          <button
-            onClick={() => { setMode("multiple"); setStep("build"); }}
-            className="w-full text-left rounded-2xl p-4"
-            style={{ background: C.white, border: `2px solid ${C.clay}` }}
-          >
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${C.clay}1A` }}>
-                <Layers size={18} color={C.clay} />
-              </div>
-              <div>
-                <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Plusieurs courses séparées</p>
-                <p className="text-xs mt-1 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-                  Chaque trajet est indépendant, avec son propre livreur. Idéal si c'est urgent.
-                </p>
-              </div>
-            </div>
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="pb-28">
       <TopBar
-        title={mode === "multiple" ? "Courses séparées" : "Tournée multi-arrêts"}
-        onBack={() => setStep("mode")}
-        right={<Tag tone={mode === "multiple" ? "clay" : "lagoon"}>{stops.length - 1} {mode === "multiple" ? "course(s)" : "arrêt(s)"}</Tag>}
+        title={isSimpleTrip ? "Nouvelle course" : mode === "multiple" ? "Courses séparées" : "Tournée multi-arrêts"}
+        onBack={onCancel}
+        right={!isSimpleTrip ? <Tag tone={mode === "multiple" ? "clay" : "lagoon"}>{stops.length - 1} {mode === "multiple" ? "course(s)" : "arrêt(s)"}</Tag> : null}
       />
 
       <div className="px-5 mt-4">
@@ -736,12 +729,25 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
               </div>
             );
           })}
-          <button onClick={addStop} disabled={stops.length >= 5} className="w-full flex items-center justify-center gap-1.5 mt-3 py-2 rounded-xl" style={{ border: `1px dashed ${C.line}`, opacity: stops.length >= 5 ? 0.4 : 1 }}>
-            <Plus size={13} color={C.inkSoft} />
-            <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-              {mode === "multiple" ? "Ajouter une course" : "Ajouter un arrêt"}
-            </span>
-          </button>
+          {isSimpleTrip ? (
+            <button
+              onClick={() => setShowModeChoice(true)}
+              className="w-full flex items-center justify-center gap-1.5 mt-3 py-2 rounded-xl"
+              style={{ border: `1px dashed ${C.line}` }}
+            >
+              <Plus size={13} color={C.inkSoft} />
+              <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                J'ai plusieurs destinations
+              </span>
+            </button>
+          ) : (
+            <button onClick={addStop} disabled={stops.length >= 5} className="w-full flex items-center justify-center gap-1.5 mt-3 py-2 rounded-xl" style={{ border: `1px dashed ${C.line}`, opacity: stops.length >= 5 ? 0.4 : 1 }}>
+              <Plus size={13} color={C.inkSoft} />
+              <span className="text-xs font-semibold" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                {mode === "multiple" ? "Ajouter une course" : "Ajouter un arrêt"}
+              </span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -861,6 +867,56 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
             setPickerIndex(null);
           }}
         />
+      )}
+
+      {showModeChoice && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+          <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Plusieurs destinations</h2>
+              <button onClick={() => setShowModeChoice(false)}><X size={18} color={C.inkSoft} /></button>
+            </div>
+            <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Comment voulez-vous organiser vos destinations supplémentaires ?
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={() => { setMode("tournee"); addStop(); setShowModeChoice(false); }}
+                className="w-full text-left rounded-2xl p-4"
+                style={{ background: C.white, border: `2px solid ${C.lagoon}` }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${C.lagoon}1A` }}>
+                    <GitBranch size={18} color={C.lagoon} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Une tournée, plusieurs arrêts</p>
+                    <p className="text-xs mt-1 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                      Un seul livreur passe par tous vos points. Un seul prix, un seul suivi.
+                    </p>
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={() => { setMode("multiple"); addStop(); setShowModeChoice(false); }}
+                className="w-full text-left rounded-2xl p-4"
+                style={{ background: C.white, border: `2px solid ${C.clay}` }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: `${C.clay}1A` }}>
+                    <Layers size={18} color={C.clay} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Plusieurs courses séparées</p>
+                    <p className="text-xs mt-1 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                      Chaque trajet est indépendant, avec son propre livreur. Idéal si c'est urgent.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1397,6 +1453,151 @@ function PurchaseDeclarationModal({ course, onClose, onSubmit }) {
   );
 }
 
+function LivreurVerificationScreen({ user, status, onSubmitted, onLogout }) {
+  const [idPhoto, setIdPhoto] = useState(null);
+  const [idPreview, setIdPreview] = useState(null);
+  const [selfiePhoto, setSelfiePhoto] = useState(null);
+  const [selfiePreview, setSelfiePreview] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleFile = (setFile, setPreview) => (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFile(file);
+    setPreview(URL.createObjectURL(file));
+  };
+
+  const submit = async () => {
+    if (!idPhoto || !selfiePhoto) {
+      setError("Les deux photos sont nécessaires pour continuer.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+    try {
+      const idUrl = await uploadIdentityPhoto(user.id, idPhoto, "piece");
+      const selfieUrl = await uploadIdentityPhoto(user.id, selfiePhoto, "selfie");
+      await submitVerification(user.id, idUrl, selfieUrl);
+      onSubmitted();
+    } catch {
+      setError("Erreur lors de l'envoi. Réessayez.");
+      setSubmitting(false);
+    }
+  };
+
+  if (status === "en_attente_review") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ background: C.sand }}>
+        <Clock size={36} color={C.zem} className="mb-4" />
+        <h1 className="text-lg font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Vérification en cours</h1>
+        <p className="text-xs mt-2 leading-snug max-w-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          L'équipe Manhïa examine vos documents. Vous pourrez accepter des courses dès validation.
+        </p>
+        <button onClick={onLogout} className="mt-6 text-xs font-semibold underline" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Se déconnecter
+        </button>
+      </div>
+    );
+  }
+
+  if (status === "refuse") {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center" style={{ background: C.sand }}>
+        <AlertCircle size={36} color={C.danger} className="mb-4" />
+        <h1 className="text-lg font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Vérification refusée</h1>
+        <p className="text-xs mt-2 leading-snug max-w-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Vos documents n'ont pas pu être validés. Contactez Manhïa ou soumettez de nouvelles photos ci-dessous.
+        </p>
+        <div className="w-full max-w-xs mt-6">
+          <VerificationForm />
+        </div>
+      </div>
+    );
+  }
+
+  function VerificationForm() {
+    return (
+      <>
+        <label
+          className="flex flex-col items-center justify-center gap-2 rounded-xl py-6 mb-3 cursor-pointer"
+          style={{ background: C.white, border: `1px dashed ${C.line}` }}
+        >
+          {idPreview ? (
+            <img src={idPreview} alt="Pièce" className="max-h-32 rounded-lg" />
+          ) : (
+            <>
+              <Camera size={20} color={C.inkSoft} />
+              <span className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Photo de votre pièce d'identité</span>
+            </>
+          )}
+          <input type="file" accept="image/*" capture="environment" onChange={handleFile(setIdPhoto, setIdPreview)} className="hidden" />
+        </label>
+
+        <label
+          className="flex flex-col items-center justify-center gap-2 rounded-xl py-6 mb-4 cursor-pointer"
+          style={{ background: C.white, border: `1px dashed ${C.line}` }}
+        >
+          {selfiePreview ? (
+            <img src={selfiePreview} alt="Selfie" className="max-h-32 rounded-lg" />
+          ) : (
+            <>
+              <User size={20} color={C.inkSoft} />
+              <span className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Selfie de votre visage</span>
+            </>
+          )}
+          <input type="file" accept="image/*" capture="user" onChange={handleFile(setSelfiePhoto, setSelfiePreview)} className="hidden" />
+        </label>
+
+        {error && <p className="text-xs mb-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+
+        <PrimaryButton onClick={submit} disabled={submitting}>
+          {submitting ? "Envoi..." : "Envoyer pour vérification"}
+        </PrimaryButton>
+      </>
+    );
+  }
+
+  return (
+    <div className="min-h-screen px-6 pt-12 pb-8 flex flex-col" style={{ background: C.sand }}>
+      <div className="text-center mb-6">
+        <ShieldCheck size={32} color={C.lagoon} className="mx-auto mb-3" />
+        <h1 className="text-lg font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Vérifiez votre identité</h1>
+        <p className="text-xs mt-2 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Pour la sécurité des clients, chaque livreur doit être vérifié avant d'accepter des courses.
+        </p>
+      </div>
+      <VerificationForm />
+      <button onClick={onLogout} className="mt-6 text-xs font-semibold underline mx-auto" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+        Se déconnecter
+      </button>
+    </div>
+  );
+}
+
+function playNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playTone = (freq, start, duration) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+      gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + duration + 0.05);
+    };
+    playTone(880, 0, 0.15);
+    playTone(1100, 0.15, 0.18);
+  } catch {
+    // audio indisponible (permissions navigateur, etc.) — pas bloquant
+  }
+}
+
 function LivreurApp({ user, onLogout }) {
   const [tab, setTab] = useState("home");
   const [online, setOnline] = useState(true);
@@ -1406,10 +1607,26 @@ function LivreurApp({ user, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
   const [purchaseCourse, setPurchaseCourse] = useState(null); // course en attente de déclaration d'achat
+  const [justArrived, setJustArrived] = useState(false);
+  const knownIdsRef = useRef(new Set());
+  const firstLoadRef = useRef(true);
 
   const load = useCallback(async () => {
     const all = await fetchAllCourses();
-    setAvailable(all.filter((c) => c.status === "en_attente"));
+    const availableNow = all.filter((c) => c.status === "en_attente");
+
+    if (!firstLoadRef.current) {
+      const hasNew = availableNow.some((c) => !knownIdsRef.current.has(c.id));
+      if (hasNew) {
+        playNotificationSound();
+        setJustArrived(true);
+        setTimeout(() => setJustArrived(false), 2500);
+      }
+    }
+    firstLoadRef.current = false;
+    knownIdsRef.current = new Set(availableNow.map((c) => c.id));
+
+    setAvailable(availableNow);
     setMine(all.filter((c) => c.livreurId === user.id));
     setLoading(false);
   }, [user.id]);
@@ -1493,6 +1710,13 @@ function LivreurApp({ user, onLogout }) {
       <div className="flex-1">
         {tab === "home" && (
           <div className="pb-6">
+            {justArrived && (
+              <div className="px-5 pt-3" style={{ background: C.zem }}>
+                <p className="text-xs font-bold text-center py-2" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>
+                  🔔 Nouvelle course disponible !
+                </p>
+              </div>
+            )}
             <div className="px-5 pt-6 pb-6" style={{ background: C.ink }}>
               <div className="flex items-center justify-between mb-5">
                 <div>
@@ -1749,16 +1973,18 @@ function AdminLogin({ onSuccess }) {
 
 function AdminPage() {
   const [authed, setAuthed] = useState(false);
-  const [tab, setTab] = useState("complaints");
+  const [tab, setTab] = useState("livreurs");
   const [complaints, setComplaints] = useState([]);
   const [passwordRequests, setPasswordRequests] = useState([]);
+  const [livreurs, setLivreurs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [resetTarget, setResetTarget] = useState(null);
 
   const load = useCallback(async () => {
-    const [c, p] = await Promise.all([fetchComplaints(), fetchPasswordRequests()]);
+    const [c, p, l] = await Promise.all([fetchComplaints(), fetchPasswordRequests(), fetchPendingLivreurs()]);
     setComplaints(c);
     setPasswordRequests(p);
+    setLivreurs(l);
     setLoading(false);
   }, []);
 
@@ -1770,6 +1996,7 @@ function AdminPage() {
 
   const openComplaints = complaints.filter((c) => c.status !== "traite");
   const openRequests = passwordRequests.filter((p) => p.status !== "traite");
+  const pendingLivreurs = livreurs.filter((l) => l.verification_status === "en_attente");
 
   return (
     <div style={{ background: C.sand, minHeight: "100vh" }}>
@@ -1778,7 +2005,14 @@ function AdminPage() {
         <p className="text-xs mt-1" style={{ color: "#B8B2A3", fontFamily: FONT_BODY }}>Plaintes et demandes des utilisateurs</p>
       </div>
 
-      <div className="flex px-5 mt-4 gap-2">
+      <div className="flex px-5 mt-4 gap-2 flex-wrap">
+        <button
+          onClick={() => setTab("livreurs")}
+          className="flex-1 py-2.5 rounded-full text-xs font-bold"
+          style={{ background: tab === "livreurs" ? C.ink : C.white, color: tab === "livreurs" ? C.white : C.ink, border: `1px solid ${C.line}`, fontFamily: FONT_DISPLAY }}
+        >
+          Livreurs {pendingLivreurs.length > 0 && `(${pendingLivreurs.length})`}
+        </button>
         <button
           onClick={() => setTab("complaints")}
           className="flex-1 py-2.5 rounded-full text-xs font-bold"
@@ -1798,6 +2032,52 @@ function AdminPage() {
       <div className="px-5 mt-4 pb-10 space-y-3">
         {loading ? (
           <p className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Chargement...</p>
+        ) : tab === "livreurs" ? (
+          livreurs.length === 0 ? (
+            <EmptyState icon={User} title="Aucun livreur" sub="Les livreurs inscrits et leurs vérifications apparaîtront ici." />
+          ) : (
+            livreurs.map((l) => (
+              <div key={l.id} className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${C.line}` }}>
+                <div className="flex items-center justify-between mb-2">
+                  <Tag tone={l.verification_status === "verifie" ? "lagoon" : l.verification_status === "refuse" ? "danger" : "zem"}>
+                    {l.verification_status === "verifie" ? "Vérifié" : l.verification_status === "refuse" ? "Refusé" : "En attente"}
+                  </Tag>
+                  <span className="text-[10px]" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>{l.phone}</span>
+                </div>
+                <p className="text-sm font-bold mb-2" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>{l.name}</p>
+                {l.id_photo_url && l.selfie_photo_url && (
+                  <div className="flex gap-2 mb-3">
+                    <a href={l.id_photo_url} target="_blank" rel="noreferrer" className="flex-1">
+                      <img src={l.id_photo_url} alt="Pièce" className="w-full h-24 object-cover rounded-lg" />
+                      <p className="text-[10px] text-center mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Pièce</p>
+                    </a>
+                    <a href={l.selfie_photo_url} target="_blank" rel="noreferrer" className="flex-1">
+                      <img src={l.selfie_photo_url} alt="Selfie" className="w-full h-24 object-cover rounded-lg" />
+                      <p className="text-[10px] text-center mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Selfie</p>
+                    </a>
+                  </div>
+                )}
+                {l.verification_status === "en_attente" && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => { await setLivreurVerificationStatus(l.id, "verifie"); load(); }}
+                      className="flex-1 py-2 rounded-xl text-xs font-bold"
+                      style={{ background: C.lagoon, color: C.white, fontFamily: FONT_DISPLAY }}
+                    >
+                      Valider
+                    </button>
+                    <button
+                      onClick={async () => { await setLivreurVerificationStatus(l.id, "refuse"); load(); }}
+                      className="flex-1 py-2 rounded-xl text-xs font-bold"
+                      style={{ background: C.white, border: `1px solid ${C.danger}`, color: C.danger, fontFamily: FONT_DISPLAY }}
+                    >
+                      Refuser
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))
+          )
         ) : tab === "complaints" ? (
           complaints.length === 0 ? (
             <EmptyState icon={AlertCircle} title="Aucune plainte" sub="Les signalements des utilisateurs apparaîtront ici." />
@@ -1946,6 +2226,12 @@ export default function ManhiaPrototype() {
     saveSession(null);
   };
 
+  const handleVerificationSubmitted = () => {
+    const updated = { ...user, verificationStatus: "en_attente_review" };
+    setUser(updated);
+    saveSession(updated);
+  };
+
   if (isAdminRoute) {
     return (
       <div className="min-h-screen" style={{ background: C.sand }}>
@@ -1956,6 +2242,9 @@ export default function ManhiaPrototype() {
     );
   }
 
+  const livreurNeedsVerification =
+    user && user.role === "livreur" && user.verificationStatus !== "verifie";
+
   return (
     <div className="min-h-screen" style={{ background: C.sand }}>
       <div className="max-w-md mx-auto shadow-2xl min-h-screen" style={{ background: C.sand }}>
@@ -1963,6 +2252,13 @@ export default function ManhiaPrototype() {
           <AuthScreen onAuth={handleAuth} />
         ) : user.role === "client" ? (
           <ClientApp user={user} onLogout={handleLogout} />
+        ) : livreurNeedsVerification ? (
+          <LivreurVerificationScreen
+            user={user}
+            status={user.verificationStatus === "en_attente" ? "form" : user.verificationStatus}
+            onSubmitted={handleVerificationSubmitted}
+            onLogout={handleLogout}
+          />
         ) : (
           <LivreurApp user={user} onLogout={handleLogout} />
         )}
