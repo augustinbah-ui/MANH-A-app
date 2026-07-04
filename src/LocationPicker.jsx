@@ -53,22 +53,36 @@ function RecenterMap({ position }) {
 // Recherche d'adresse via Nominatim (OpenStreetMap), gratuit, limité à la zone Bénin
 async function searchAddress(query) {
   if (!query || query.trim().length < 3) return [];
-  try {
-    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-      query + ", Cotonou, Bénin"
-    )}&limit=5&countrycodes=bj`;
-    const res = await fetch(url, {
-      headers: { "Accept-Language": "fr" },
-    });
-    const data = await res.json();
-    return data.map((d) => ({
-      label: d.display_name,
-      lat: parseFloat(d.lat),
-      lng: parseFloat(d.lon),
-    }));
-  } catch {
-    return [];
+
+  // Essaie plusieurs formulations, de la plus précise à la plus large,
+  // pour maximiser les chances de trouver un résultat avec Nominatim (gratuit)
+  const attempts = [
+    `${query}, Cotonou, Bénin`,
+    `${query}, Bénin`,
+    query,
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+        attempt
+      )}&limit=6&countrycodes=bj&addressdetails=1`;
+      const res = await fetch(url, {
+        headers: { "Accept-Language": "fr" },
+      });
+      const data = await res.json();
+      if (data && data.length > 0) {
+        return data.map((d) => ({
+          label: d.display_name,
+          lat: parseFloat(d.lat),
+          lng: parseFloat(d.lon),
+        }));
+      }
+    } catch {
+      // essaie la formulation suivante
+    }
   }
+  return [];
 }
 
 // Distance à vol d'oiseau (haversine), en km — approximation raisonnable pour un prototype
@@ -113,12 +127,14 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [noResults, setNoResults] = useState(false);
   const [selected, setSelected] = useState(initialPosition || null);
   const [addressLabel, setAddressLabel] = useState(initialPosition?.label || "");
   const debounceRef = useRef(null);
 
   const handleSearchChange = (value) => {
     setQuery(value);
+    setNoResults(false);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(async () => {
       if (value.trim().length < 3) {
@@ -128,6 +144,7 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
       setSearching(true);
       const r = await searchAddress(value);
       setResults(r);
+      setNoResults(r.length === 0);
       setSearching(false);
     }, 500);
   };
@@ -205,6 +222,14 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
             ))}
           </div>
         )}
+
+        {noResults && !searching && (
+          <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg p-3 z-20" style={{ background: C.white, border: `1px solid ${C.zem}` }}>
+            <p className="text-xs leading-snug" style={{ color: C.ink, fontFamily: FONT_BODY }}>
+              Aucune adresse trouvée pour cette recherche. Touchez directement l'endroit sur la carte ci-dessous pour le sélectionner précisément.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 relative">
@@ -264,4 +289,3 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
     </div>
   );
 }
-
