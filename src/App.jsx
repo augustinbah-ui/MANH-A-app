@@ -3,7 +3,7 @@ import {
   Package, Star, ChevronRight, Search, Home, User, ListOrdered,
   Wallet, Bell, Navigation, CheckCircle2, Phone, Power, Plus,
   GitBranch, Layers, Trash2, LogOut, Eye, EyeOff, ArrowLeft,
-  Clock, MapPin, ShieldCheck, Check, Camera, Receipt
+  Clock, MapPin, ShieldCheck, Check, Camera, Receipt, X, AlertCircle
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import LocationPickerModal, { haversineDistance } from "./LocationPicker";
@@ -143,6 +143,36 @@ async function uploadReceiptPhoto(courseId, file) {
   if (error) throw error;
   const { data } = supabase.storage.from("receipts").getPublicUrl(path);
   return data.publicUrl;
+}
+
+async function cancelCourseRequest(courseId, cancelledBy, reason, history) {
+  const { error } = await supabase
+    .from("courses")
+    .update({
+      status: "annulee",
+      cancelled_by: cancelledBy,
+      cancel_reason: reason,
+      history: [...history, { label: `Course annulée (${cancelledBy})`, at: Date.now() }],
+    })
+    .eq("id", courseId);
+  if (error) throw error;
+}
+
+async function submitPasswordRequest(name, phone, message) {
+  const { error } = await supabase.from("password_requests").insert({ name, phone, message });
+  if (error) throw error;
+}
+
+async function submitComplaint({ courseId, reporterId, reporterName, reporterRole, reason, description }) {
+  const { error } = await supabase.from("complaints").insert({
+    course_id: courseId,
+    reporter_id: reporterId,
+    reporter_name: reporterName,
+    reporter_role: reporterRole,
+    reason,
+    description,
+  });
+  if (error) throw error;
 }
 
 
@@ -306,6 +336,7 @@ function AuthScreen({ onAuth }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
 
   const submit = async () => {
     setError("");
@@ -429,6 +460,14 @@ function AuthScreen({ onAuth }) {
           <TextField label="Mot de passe" value={password} onChange={setPassword} type="password" placeholder="••••••" />
         </div>
 
+        {mode === "login" && (
+          <button onClick={() => setShowForgot(true)} className="mt-3">
+            <span className="text-xs font-semibold underline" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Mot de passe oublié ?
+            </span>
+          </button>
+        )}
+
         {error && (
           <p className="text-xs mt-3 font-semibold" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>
         )}
@@ -442,6 +481,72 @@ function AuthScreen({ onAuth }) {
         <p className="text-[11px] text-center mt-4 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
           Prototype de démonstration — vos données restent dans cet environnement de test.
         </p>
+      </div>
+
+      {showForgot && <ForgotPasswordModal onClose={() => setShowForgot(false)} />}
+    </div>
+  );
+}
+
+function ForgotPasswordModal({ onClose }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!name || !phone) {
+      setError("Indiquez au moins votre nom et votre numéro.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+    try {
+      await submitPasswordRequest(name, phone, message);
+      setDone(true);
+    } catch {
+      setError("Erreur d'envoi. Réessayez.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Mot de passe oublié</h2>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+
+        {done ? (
+          <div className="py-4 text-center">
+            <CheckCircle2 size={32} color={C.lagoon} className="mx-auto mb-3" />
+            <p className="text-sm font-semibold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Demande envoyée</p>
+            <p className="text-xs mt-2 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              L'équipe Manhïa vous contactera bientôt pour réinitialiser votre accès.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs mb-4 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Indiquez vos informations, l'équipe Manhïa vous recontactera pour réinitialiser votre mot de passe.
+            </p>
+            <div className="space-y-3">
+              <TextField label="Nom complet" value={name} onChange={setName} placeholder="Votre nom" icon={User} />
+              <TextField label="Numéro de téléphone" value={phone} onChange={setPhone} placeholder="Votre numéro" icon={Phone} />
+              <TextField label="Message (optionnel)" value={message} onChange={setMessage} placeholder="Précisez si besoin" />
+            </div>
+            {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+            <div className="mt-5">
+              <PrimaryButton onClick={submit} disabled={submitting}>
+                {submitting ? "Envoi..." : "Envoyer la demande"}
+              </PrimaryButton>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -741,19 +846,24 @@ function shortLabel(stop) {
   return parts.slice(0, 2).join(",").trim() || text;
 }
 
-function CourseCard({ course, highlight }) {
+function CourseCard({ course, highlight, onCancel, onReport }) {
   const statusTone = {
     en_attente: "zem",
     acceptee: "lagoon",
     en_cours: "clay",
     livree: "ink",
+    annulee: "danger",
   }[course.status];
   const statusLabel = {
     en_attente: "En attente d'un livreur",
     acceptee: "Livreur en route",
     en_cours: "Livraison en cours",
     livree: "Livrée",
+    annulee: "Annulée",
   }[course.status];
+
+  const canCancel = onCancel && (course.status === "en_attente" || course.status === "acceptee");
+  const canReport = onReport && course.status === "livree";
 
   return (
     <div className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${highlight ? C.zem : C.line}`, borderWidth: highlight ? 2 : 1 }}>
@@ -810,6 +920,167 @@ function CourseCard({ course, highlight }) {
           )}
         </div>
       )}
+      {course.status === "annulee" && course.cancel_reason && (
+        <p className="text-xs mt-3 pt-3" style={{ color: C.inkSoft, fontFamily: FONT_BODY, borderTop: `1px solid ${C.line}` }}>
+          Motif : {course.cancel_reason}
+        </p>
+      )}
+      {(canCancel || canReport) && (
+        <div className="flex gap-2 mt-3 pt-3" style={{ borderTop: `1px solid ${C.line}` }}>
+          {canCancel && (
+            <button
+              onClick={() => onCancel(course)}
+              className="flex-1 py-2 rounded-xl text-xs font-bold"
+              style={{ background: C.white, border: `1px solid ${C.danger}`, color: C.danger, fontFamily: FONT_DISPLAY }}
+            >
+              Annuler la course
+            </button>
+          )}
+          {canReport && (
+            <button
+              onClick={() => onReport(course)}
+              className="flex-1 py-2 rounded-xl text-xs font-bold"
+              style={{ background: C.white, border: `1px solid ${C.line}`, color: C.inkSoft, fontFamily: FONT_DISPLAY }}
+            >
+              Signaler un problème
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CancelCourseModal({ course, onClose, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const reasons = ["Changement de plan", "Trop long à trouver un livreur", "Erreur dans la commande", "Autre"];
+
+  const confirm = async () => {
+    setSubmitting(true);
+    try {
+      await onConfirm(reason || "Non précisé");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Annuler la course</h2>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Pourquoi annulez-vous cette course ?</p>
+        <div className="space-y-2 mb-5">
+          {reasons.map((r) => (
+            <button
+              key={r}
+              onClick={() => setReason(r)}
+              className="w-full text-left px-4 py-3 rounded-xl text-sm"
+              style={{
+                background: reason === r ? C.sandDeep : C.white,
+                border: `1px solid ${reason === r ? C.clay : C.line}`,
+                color: C.ink,
+                fontFamily: FONT_BODY,
+              }}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={confirm}
+          disabled={submitting}
+          className="w-full py-3.5 rounded-2xl text-sm font-bold"
+          style={{ background: C.danger, color: C.white, fontFamily: FONT_DISPLAY }}
+        >
+          {submitting ? "..." : "Confirmer l'annulation"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReportComplaintModal({ course, reporter, onClose, onSubmitted }) {
+  const [reason, setReason] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState("");
+  const reasons = ["Retard important", "Colis endommagé", "Comportement inapproprié", "Montant incorrect", "Autre"];
+
+  const submit = async () => {
+    if (!reason) {
+      setError("Choisissez un motif.");
+      return;
+    }
+    setError("");
+    setSubmitting(true);
+    try {
+      await submitComplaint({
+        courseId: course.id,
+        reporterId: reporter.id,
+        reporterName: reporter.name,
+        reporterRole: reporter.role,
+        reason,
+        description,
+      });
+      setDone(true);
+    } catch {
+      setError("Erreur d'envoi. Réessayez.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white, maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Signaler un problème</h2>
+          <button onClick={() => { onClose(); if (done) onSubmitted?.(); }}><X size={18} color={C.inkSoft} /></button>
+        </div>
+
+        {done ? (
+          <div className="py-4 text-center">
+            <CheckCircle2 size={32} color={C.lagoon} className="mx-auto mb-3" />
+            <p className="text-sm font-semibold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Signalement envoyé</p>
+            <p className="text-xs mt-2 leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              L'équipe Manhïa va examiner votre signalement.
+            </p>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Quel est le problème ?</p>
+            <div className="space-y-2 mb-4">
+              {reasons.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setReason(r)}
+                  className="w-full text-left px-4 py-3 rounded-xl text-sm"
+                  style={{
+                    background: reason === r ? C.sandDeep : C.white,
+                    border: `1px solid ${reason === r ? C.clay : C.line}`,
+                    color: C.ink,
+                    fontFamily: FONT_BODY,
+                  }}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            <TextField label="Détails (optionnel)" value={description} onChange={setDescription} placeholder="Décrivez ce qui s'est passé" />
+            {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+            <div className="mt-5">
+              <PrimaryButton onClick={submit} disabled={submitting}>
+                {submitting ? "Envoi..." : "Envoyer le signalement"}
+              </PrimaryButton>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -819,6 +1090,8 @@ function ClientApp({ user, onLogout }) {
   const [booking, setBooking] = useState(false);
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [reportTarget, setReportTarget] = useState(null);
 
   const loadCourses = useCallback(async () => {
     const all = await fetchAllCourses();
@@ -838,6 +1111,12 @@ function ClientApp({ user, onLogout }) {
     return () => supabase.removeChannel(channel);
   }, [loadCourses]);
 
+  const handleCancel = async (reason) => {
+    await cancelCourseRequest(cancelTarget.id, "client", reason, cancelTarget.history);
+    setCancelTarget(null);
+    loadCourses();
+  };
+
   if (booking) {
     return (
       <div style={{ background: C.sand, minHeight: "100vh" }}>
@@ -850,7 +1129,7 @@ function ClientApp({ user, onLogout }) {
     );
   }
 
-  const active = courses.filter((c) => c.status !== "livree");
+  const active = courses.filter((c) => c.status !== "livree" && c.status !== "annulee");
   const past = courses.filter((c) => c.status === "livree");
 
   return (
@@ -894,7 +1173,7 @@ function ClientApp({ user, onLogout }) {
                 <EmptyState icon={Package} title="Aucune course en cours" sub="Créez votre première course pour voir apparaître son suivi ici." />
               ) : (
                 <div className="space-y-3">
-                  {active.map((c) => <CourseCard key={c.id} course={c} highlight />)}
+                  {active.map((c) => <CourseCard key={c.id} course={c} highlight onCancel={setCancelTarget} />)}
                 </div>
               )}
             </div>
@@ -908,7 +1187,9 @@ function ClientApp({ user, onLogout }) {
               {courses.length === 0 ? (
                 <EmptyState icon={ListOrdered} title="Aucune course pour l'instant" sub="Votre historique s'affichera ici dès votre première commande." />
               ) : (
-                courses.map((c) => <CourseCard key={c.id} course={c} />)
+                courses.map((c) => (
+                  <CourseCard key={c.id} course={c} onCancel={setCancelTarget} onReport={setReportTarget} />
+                ))
               )}
             </div>
           </div>
@@ -945,6 +1226,15 @@ function ClientApp({ user, onLogout }) {
                 </div>
               </div>
               <div className="mt-4">
+                <a
+                  href="https://wa.me/2290162334888"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 mb-3"
+                  style={{ background: C.white, border: `1px solid ${C.line}`, color: C.ink, fontFamily: FONT_DISPLAY }}
+                >
+                  <Phone size={15} /> Nous contacter
+                </a>
                 <button onClick={onLogout} className="w-full py-3 rounded-xl text-sm font-bold" style={{ background: C.white, border: `1px solid ${C.line}`, color: C.danger, fontFamily: FONT_DISPLAY }}>
                   Se déconnecter
                 </button>
@@ -954,6 +1244,21 @@ function ClientApp({ user, onLogout }) {
         )}
       </div>
       <BottomNav tab={tab} setTab={setTab} tone="lagoon" />
+
+      {cancelTarget && (
+        <CancelCourseModal
+          course={cancelTarget}
+          onClose={() => setCancelTarget(null)}
+          onConfirm={handleCancel}
+        />
+      )}
+      {reportTarget && (
+        <ReportComplaintModal
+          course={reportTarget}
+          reporter={{ id: user.id, name: user.name, role: "client" }}
+          onClose={() => setReportTarget(null)}
+        />
+      )}
     </div>
   );
 }
