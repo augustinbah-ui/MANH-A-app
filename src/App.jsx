@@ -1608,8 +1608,26 @@ function LivreurApp({ user, onLogout }) {
   const [busyId, setBusyId] = useState(null);
   const [purchaseCourse, setPurchaseCourse] = useState(null); // course en attente de déclaration d'achat
   const [justArrived, setJustArrived] = useState(false);
+  const [myPosition, setMyPosition] = useState(null);
+  const [geoDenied, setGeoDenied] = useState(false);
   const knownIdsRef = useRef(new Set());
   const firstLoadRef = useRef(true);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGeoDenied(true);
+      return;
+    }
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        setMyPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoDenied(false);
+      },
+      () => setGeoDenied(true),
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
 
   const load = useCallback(async () => {
     const all = await fetchAllCourses();
@@ -1785,9 +1803,14 @@ function LivreurApp({ user, onLogout }) {
             )}
 
             <div className="px-5 mt-6">
-              <p className="text-xs font-bold uppercase tracking-[0.14em] mb-3" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
-                Demandes disponibles {online ? "" : "(passez en ligne pour voir)"}
-              </p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-bold uppercase tracking-[0.14em]" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+                  Demandes disponibles {online ? "" : "(passez en ligne pour voir)"}
+                </p>
+                {geoDenied && online && (
+                  <span className="text-[10px]" style={{ color: C.clay, fontFamily: FONT_BODY }}>Position non disponible</span>
+                )}
+              </div>
               {!online ? (
                 <EmptyState icon={Power} title="Vous êtes hors ligne" sub="Activez votre statut en ligne pour recevoir des demandes de courses." />
               ) : loading ? (
@@ -1796,10 +1819,26 @@ function LivreurApp({ user, onLogout }) {
                 <EmptyState icon={Package} title="Aucune demande pour l'instant" sub="Les nouvelles courses créées par les clients apparaîtront ici automatiquement." />
               ) : (
                 <div className="space-y-3">
-                  {available.map((c) => (
+                  {available
+                    .map((c) => {
+                      const depart = c.stops[0];
+                      const distToDepart = myPosition && depart?.lat ? haversineDistance(myPosition, depart) : null;
+                      return { ...c, distToDepart };
+                    })
+                    .sort((a, b) => {
+                      if (a.distToDepart == null) return 1;
+                      if (b.distToDepart == null) return -1;
+                      return a.distToDepart - b.distToDepart;
+                    })
+                    .map((c) => (
                     <div key={c.id} className="rounded-2xl p-4 shadow-md" style={{ background: C.white, border: `2px solid ${C.zem}` }}>
                       <div className="flex items-center justify-between mb-2">
-                        <Tag tone="zem">{c.item}</Tag>
+                        <div className="flex items-center gap-1.5">
+                          <Tag tone="zem">{c.item}</Tag>
+                          {c.distToDepart != null && (
+                            <Tag tone="lagoon">{c.distToDepart < 1 ? `${Math.round(c.distToDepart * 1000)} m` : `${c.distToDepart.toFixed(1)} km`}</Tag>
+                          )}
+                        </div>
                         <span className="text-lg font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{c.price.toLocaleString()} F</span>
                       </div>
                       <RouteDots />
@@ -1807,10 +1846,22 @@ function LivreurApp({ user, onLogout }) {
                         <span style={{ color: C.ink }} className="truncate">{shortLabel(c.stops[0])}</span>
                         <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(c.stops[c.stops.length - 1])}</span>
                       </div>
+                      {c.distanceKm != null && (
+                        <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                          Trajet de la course : {c.distanceKm.toFixed(1)} km
+                        </p>
+                      )}
                       {c.stops.length > 2 && (
                         <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
                           + {c.stops.length - 2} arrêt(s)
                         </p>
+                      )}
+                      {c.needsPurchase && (
+                        <div className="mt-2 px-2.5 py-1.5 rounded-lg" style={{ background: `${C.zem}22` }}>
+                          <p className="text-[10px] font-semibold" style={{ color: C.ink, fontFamily: FONT_BODY }}>
+                            🛍️ Achat à faire — dépôt client : {(c.purchaseBudget || 0).toLocaleString()} FCFA
+                          </p>
+                        </div>
                       )}
                       <button
                         onClick={() => acceptCourse(c)}
@@ -2167,6 +2218,7 @@ function ResetPasswordModal({ request, onClose, onDone }) {
   const [newPassword, setNewPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
 
   const submit = async () => {
     if (!newPassword) {
@@ -2177,30 +2229,68 @@ function ResetPasswordModal({ request, onClose, onDone }) {
     try {
       await resetUserPassword(request.phone, newPassword);
       await markPasswordRequestTreated(request.id);
-      onDone();
+      setDone(true);
     } catch {
       setError("Erreur. Vérifiez que ce numéro correspond à un compte existant.");
       setSubmitting(false);
     }
   };
 
+  const whatsappNumber = request.phone.replace(/[^0-9]/g, "");
+  const whatsappMessage = encodeURIComponent(
+    `Bonjour ${request.name}, votre nouveau mot de passe Manhïa est : ${newPassword}\n\nVous pouvez vous connecter avec ce mot de passe dès maintenant.`
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
       <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Nouveau mot de passe</h2>
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>
+            {done ? "Mot de passe réinitialisé" : "Nouveau mot de passe"}
+          </h2>
           <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
         </div>
-        <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-          Pour {request.name} ({request.phone})
-        </p>
-        <TextField label="Nouveau mot de passe" value={newPassword} onChange={setNewPassword} placeholder="Communiquez-le ensuite à l'utilisateur" />
-        {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
-        <div className="mt-5">
-          <PrimaryButton onClick={submit} disabled={submitting}>
-            {submitting ? "..." : "Réinitialiser le mot de passe"}
-          </PrimaryButton>
-        </div>
+
+        {done ? (
+          <>
+            <div className="py-2 text-center mb-4">
+              <CheckCircle2 size={28} color={C.lagoon} className="mx-auto mb-2" />
+              <p className="text-xs leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                Communiquez ce mot de passe à {request.name} pour qu'il/elle puisse se reconnecter.
+              </p>
+            </div>
+            <a
+              href={`https://wa.me/${whatsappNumber}?text=${whatsappMessage}`}
+              target="_blank"
+              rel="noreferrer"
+              onClick={onDone}
+              className="w-full py-3.5 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+              style={{ background: "#25D366", color: C.white, fontFamily: FONT_DISPLAY }}
+            >
+              <Phone size={16} /> Envoyer par WhatsApp
+            </a>
+            <button
+              onClick={onDone}
+              className="w-full mt-3 py-3 rounded-2xl text-xs font-semibold"
+              style={{ background: C.white, border: `1px solid ${C.line}`, color: C.inkSoft, fontFamily: FONT_DISPLAY }}
+            >
+              Fermer sans envoyer
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+              Pour {request.name} ({request.phone})
+            </p>
+            <TextField label="Nouveau mot de passe" value={newPassword} onChange={setNewPassword} placeholder="Sera envoyé par WhatsApp ensuite" />
+            {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+            <div className="mt-5">
+              <PrimaryButton onClick={submit} disabled={submitting}>
+                {submitting ? "..." : "Réinitialiser le mot de passe"}
+              </PrimaryButton>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
