@@ -2232,6 +2232,24 @@ export default function ManhiaPrototype() {
     saveSession(updated);
   };
 
+  // Pendant qu'un livreur attend une décision sur sa vérification, on revérifie
+  // périodiquement son statut réel en base, pour éviter qu'il reste bloqué
+  // sur un statut périmé après une validation admin.
+  useEffect(() => {
+    if (!user || user.role !== "livreur" || user.verificationStatus === "verifie") return;
+
+    const interval = setInterval(async () => {
+      const fresh = await findUserByPhone(user.phone);
+      if (fresh && fresh.verification_status !== user.verificationStatus) {
+        const updated = { ...user, verificationStatus: fresh.verification_status };
+        setUser(updated);
+        saveSession(updated);
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [user]);
+
   if (isAdminRoute) {
     return (
       <div className="min-h-screen" style={{ background: C.sand }}>
