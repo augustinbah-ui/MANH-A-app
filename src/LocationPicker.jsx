@@ -191,7 +191,7 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
         </div>
       </div>
 
-      <div className="px-4 pt-3 pb-2 relative" style={{ background: C.white }}>
+      <div className="px-4 pt-3 pb-2 relative" style={{ background: C.white, zIndex: 1000 }}>
         <div className="flex items-center gap-2 rounded-xl px-3 py-2.5" style={{ background: C.sand, border: `1px solid ${C.line}` }}>
           <Search size={16} color={C.inkSoft} />
           <input
@@ -205,7 +205,7 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
         </div>
 
         {results.length > 0 && (
-          <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg overflow-hidden z-20" style={{ background: C.white, border: `1px solid ${C.line}` }}>
+          <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg overflow-hidden" style={{ background: C.white, border: `1px solid ${C.line}`, zIndex: 1001 }}>
             {results.map((r, i) => (
               <button
                 key={i}
@@ -224,7 +224,7 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
         )}
 
         {noResults && !searching && (
-          <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg p-3 z-20" style={{ background: C.white, border: `1px solid ${C.zem}` }}>
+          <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg p-3" style={{ background: C.white, border: `1px solid ${C.zem}`, zIndex: 1001 }}>
             <p className="text-xs leading-snug" style={{ color: C.ink, fontFamily: FONT_BODY }}>
               Aucune adresse trouvée pour cette recherche. Touchez directement l'endroit sur la carte ci-dessous pour le sélectionner précisément.
             </p>
@@ -232,7 +232,7 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
         )}
       </div>
 
-      <div className="flex-1 relative">
+      <div className="flex-1 relative" style={{ zIndex: 1 }}>
         <MapContainer
           center={selected ? [selected.lat, selected.lng] : COTONOU_CENTER}
           zoom={13}
