@@ -161,17 +161,32 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
     setAddressLabel(`Position sélectionnée (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
   }, []);
 
+  const [locating, setLocating] = useState(false);
+  const [geoError, setGeoError] = useState("");
+
   const useMyLocation = () => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      setGeoError("La géolocalisation n'est pas disponible sur cet appareil.");
+      return;
+    }
+    setGeoError("");
+    setLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
         setSelected({ lat: latitude, lng: longitude });
         setAddressLabel("Ma position actuelle");
+        setLocating(false);
       },
-      () => {
-        // échec silencieux (permission refusée, etc.) — on garde la carte centrée sur Cotonou
-      }
+      (err) => {
+        setLocating(false);
+        if (err.code === 1) {
+          setGeoError("Autorisation refusée. Activez la localisation dans les réglages du navigateur, ou choisissez le point sur la carte.");
+        } else {
+          setGeoError("Impossible de récupérer votre position. Essayez de toucher directement la carte.");
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
@@ -203,6 +218,24 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
           />
           {searching && <span className="text-[10px]" style={{ color: C.inkSoft }}>...</span>}
         </div>
+
+        <button
+          onClick={useMyLocation}
+          disabled={locating}
+          className="w-full flex items-center justify-center gap-2 mt-2 py-2.5 rounded-xl"
+          style={{ background: C.lagoon, opacity: locating ? 0.7 : 1 }}
+        >
+          <Crosshair size={15} color={C.white} />
+          <span className="text-xs font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>
+            {locating ? "Localisation en cours..." : "Utiliser ma position actuelle"}
+          </span>
+        </button>
+
+        {geoError && (
+          <p className="text-[11px] mt-1.5 px-1 leading-snug" style={{ color: C.clay, fontFamily: FONT_BODY }}>
+            {geoError}
+          </p>
+        )}
 
         {results.length > 0 && (
           <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg overflow-hidden" style={{ background: C.white, border: `1px solid ${C.line}`, zIndex: 1001 }}>
