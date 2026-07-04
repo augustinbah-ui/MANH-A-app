@@ -175,6 +175,33 @@ async function submitComplaint({ courseId, reporterId, reporterName, reporterRol
   if (error) throw error;
 }
 
+const ADMIN_CODE = "CQNPD-L5ZXU";
+
+async function fetchComplaints() {
+  const { data, error } = await supabase.from("complaints").select("*").order("created_at", { ascending: false });
+  if (error) return [];
+  return data;
+}
+
+async function fetchPasswordRequests() {
+  const { data, error } = await supabase.from("password_requests").select("*").order("created_at", { ascending: false });
+  if (error) return [];
+  return data;
+}
+
+async function markComplaintTreated(id) {
+  await supabase.from("complaints").update({ status: "traite" }).eq("id", id);
+}
+
+async function markPasswordRequestTreated(id) {
+  await supabase.from("password_requests").update({ status: "traite" }).eq("id", id);
+}
+
+async function resetUserPassword(phone, newPassword) {
+  const { error } = await supabase.from("users").update({ password: newPassword }).eq("phone", phone);
+  if (error) throw error;
+}
+
 
 
 /* ---------------- small UI atoms ---------------- */
@@ -1691,8 +1718,223 @@ function saveSession(user) {
   }
 }
 
+function AdminLogin({ onSuccess }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+
+  const submit = () => {
+    if (code.trim() === ADMIN_CODE) {
+      onSuccess();
+    } else {
+      setError("Code incorrect.");
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col justify-center px-6" style={{ background: C.ink }}>
+      <div className="text-center mb-6">
+        <ShieldCheck size={32} color={C.zem} className="mx-auto mb-3" />
+        <h1 className="text-xl font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>Accès Admin Manhïa</h1>
+      </div>
+      <TextField label="Code d'accès" value={code} onChange={setCode} type="password" placeholder="Entrez le code" />
+      {error && <p className="text-xs mt-3 font-semibold" style={{ color: "#F08A6C", fontFamily: FONT_BODY }}>{error}</p>}
+      <div className="mt-5">
+        <button onClick={submit} className="w-full py-3.5 rounded-2xl text-sm font-bold" style={{ background: C.zem, color: C.ink, fontFamily: FONT_DISPLAY }}>
+          Entrer
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminPage() {
+  const [authed, setAuthed] = useState(false);
+  const [tab, setTab] = useState("complaints");
+  const [complaints, setComplaints] = useState([]);
+  const [passwordRequests, setPasswordRequests] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [resetTarget, setResetTarget] = useState(null);
+
+  const load = useCallback(async () => {
+    const [c, p] = await Promise.all([fetchComplaints(), fetchPasswordRequests()]);
+    setComplaints(c);
+    setPasswordRequests(p);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (authed) load();
+  }, [authed, load]);
+
+  if (!authed) return <AdminLogin onSuccess={() => setAuthed(true)} />;
+
+  const openComplaints = complaints.filter((c) => c.status !== "traite");
+  const openRequests = passwordRequests.filter((p) => p.status !== "traite");
+
+  return (
+    <div style={{ background: C.sand, minHeight: "100vh" }}>
+      <div className="px-5 pt-6 pb-4" style={{ background: C.ink }}>
+        <h1 className="text-lg font-bold" style={{ color: C.white, fontFamily: FONT_DISPLAY }}>Admin Manhïa</h1>
+        <p className="text-xs mt-1" style={{ color: "#B8B2A3", fontFamily: FONT_BODY }}>Plaintes et demandes des utilisateurs</p>
+      </div>
+
+      <div className="flex px-5 mt-4 gap-2">
+        <button
+          onClick={() => setTab("complaints")}
+          className="flex-1 py-2.5 rounded-full text-xs font-bold"
+          style={{ background: tab === "complaints" ? C.ink : C.white, color: tab === "complaints" ? C.white : C.ink, border: `1px solid ${C.line}`, fontFamily: FONT_DISPLAY }}
+        >
+          Plaintes {openComplaints.length > 0 && `(${openComplaints.length})`}
+        </button>
+        <button
+          onClick={() => setTab("passwords")}
+          className="flex-1 py-2.5 rounded-full text-xs font-bold"
+          style={{ background: tab === "passwords" ? C.ink : C.white, color: tab === "passwords" ? C.white : C.ink, border: `1px solid ${C.line}`, fontFamily: FONT_DISPLAY }}
+        >
+          Mots de passe {openRequests.length > 0 && `(${openRequests.length})`}
+        </button>
+      </div>
+
+      <div className="px-5 mt-4 pb-10 space-y-3">
+        {loading ? (
+          <p className="text-xs" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Chargement...</p>
+        ) : tab === "complaints" ? (
+          complaints.length === 0 ? (
+            <EmptyState icon={AlertCircle} title="Aucune plainte" sub="Les signalements des utilisateurs apparaîtront ici." />
+          ) : (
+            complaints.map((c) => (
+              <div key={c.id} className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${C.line}` }}>
+                <div className="flex items-center justify-between mb-2">
+                  <Tag tone={c.status === "traite" ? "lagoon" : "danger"}>{c.status === "traite" ? "Traité" : "Nouveau"}</Tag>
+                  <span className="text-[10px]" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                    {new Date(c.created_at).toLocaleString("fr-FR")}
+                  </span>
+                </div>
+                <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>{c.reason}</p>
+                <p className="text-xs mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                  Par {c.reporter_name} ({c.reporter_role})
+                </p>
+                {c.description && (
+                  <p className="text-xs mt-2 p-2 rounded-lg" style={{ background: C.sand, color: C.ink, fontFamily: FONT_BODY }}>
+                    {c.description}
+                  </p>
+                )}
+                {c.status !== "traite" && (
+                  <button
+                    onClick={async () => { await markComplaintTreated(c.id); load(); }}
+                    className="w-full mt-3 py-2 rounded-xl text-xs font-bold"
+                    style={{ background: C.lagoon, color: C.white, fontFamily: FONT_DISPLAY }}
+                  >
+                    Marquer comme traité
+                  </button>
+                )}
+              </div>
+            ))
+          )
+        ) : passwordRequests.length === 0 ? (
+          <EmptyState icon={User} title="Aucune demande" sub="Les demandes de mot de passe oublié apparaîtront ici." />
+        ) : (
+          passwordRequests.map((p) => (
+            <div key={p.id} className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${C.line}` }}>
+              <div className="flex items-center justify-between mb-2">
+                <Tag tone={p.status === "traite" ? "lagoon" : "zem"}>{p.status === "traite" ? "Traité" : "Nouveau"}</Tag>
+                <span className="text-[10px]" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                  {new Date(p.created_at).toLocaleString("fr-FR")}
+                </span>
+              </div>
+              <p className="text-sm font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>{p.name}</p>
+              <p className="text-xs mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>{p.phone}</p>
+              {p.message && (
+                <p className="text-xs mt-2 p-2 rounded-lg" style={{ background: C.sand, color: C.ink, fontFamily: FONT_BODY }}>
+                  {p.message}
+                </p>
+              )}
+              {p.status !== "traite" && (
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => setResetTarget(p)}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold"
+                    style={{ background: C.clay, color: C.white, fontFamily: FONT_DISPLAY }}
+                  >
+                    Réinitialiser
+                  </button>
+                  <button
+                    onClick={async () => { await markPasswordRequestTreated(p.id); load(); }}
+                    className="flex-1 py-2 rounded-xl text-xs font-bold"
+                    style={{ background: C.white, border: `1px solid ${C.line}`, color: C.inkSoft, fontFamily: FONT_DISPLAY }}
+                  >
+                    Marquer traité
+                  </button>
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+
+      {resetTarget && (
+        <ResetPasswordModal
+          request={resetTarget}
+          onClose={() => setResetTarget(null)}
+          onDone={async () => { setResetTarget(null); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ResetPasswordModal({ request, onClose, onDone }) {
+  const [newPassword, setNewPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!newPassword) {
+      setError("Indiquez un nouveau mot de passe.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await resetUserPassword(request.phone, newPassword);
+      await markPasswordRequestTreated(request.id);
+      onDone();
+    } catch {
+      setError("Erreur. Vérifiez que ce numéro correspond à un compte existant.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
+      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Nouveau mot de passe</h2>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Pour {request.name} ({request.phone})
+        </p>
+        <TextField label="Nouveau mot de passe" value={newPassword} onChange={setNewPassword} placeholder="Communiquez-le ensuite à l'utilisateur" />
+        {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
+        <div className="mt-5">
+          <PrimaryButton onClick={submit} disabled={submitting}>
+            {submitting ? "..." : "Réinitialiser le mot de passe"}
+          </PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ManhiaPrototype() {
   const [user, setUser] = useState(() => loadSession());
+  const [isAdminRoute, setIsAdminRoute] = useState(() => window.location.hash === "#admin");
+
+  useEffect(() => {
+    const onHashChange = () => setIsAdminRoute(window.location.hash === "#admin");
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   const handleAuth = (u) => {
     setUser(u);
@@ -1703,6 +1945,16 @@ export default function ManhiaPrototype() {
     setUser(null);
     saveSession(null);
   };
+
+  if (isAdminRoute) {
+    return (
+      <div className="min-h-screen" style={{ background: C.sand }}>
+        <div className="max-w-md mx-auto shadow-2xl min-h-screen" style={{ background: C.sand }}>
+          <AdminPage />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen" style={{ background: C.sand }}>
