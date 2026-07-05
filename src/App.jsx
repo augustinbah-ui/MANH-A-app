@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import LocationPickerModal, { haversineDistance } from "./LocationPicker";
+import { openFedaPayCheckout } from "./fedapayClient";
 
 /* ===========================================================
    MANHÏA — prototype fonctionnel (Supabase)
@@ -89,6 +90,9 @@ async function createCourse(course) {
       purchase_budget: course.needsPurchase ? course.purchaseBudget : null,
       status: "en_attente",
       history: course.history,
+      payer_type: course.payerType || "client",
+      recipient_name: course.recipientName || null,
+      recipient_phone: course.recipientPhone || null,
     })
     .select()
     .single();
@@ -116,6 +120,12 @@ function mapCourseFromDb(row) {
     status: row.status,
     history: row.history || [],
     createdAt: new Date(row.created_at).getTime(),
+    paid: row.paid || false,
+    paymentRef: row.payment_ref || null,
+    paymentAmount: row.payment_amount != null ? Number(row.payment_amount) : null,
+    payerType: row.payer_type || "client",
+    recipientName: row.recipient_name || null,
+    recipientPhone: row.recipient_phone || null,
   };
 }
 
@@ -123,6 +133,12 @@ async function fetchAllCourses() {
   const { data, error } = await supabase.from("courses").select("*").order("created_at", { ascending: false });
   if (error) return [];
   return data.map(mapCourseFromDb);
+}
+
+async function fetchCourseById(courseId) {
+  const { data, error } = await supabase.from("courses").select("*").eq("id", courseId).maybeSingle();
+  if (error || !data) return null;
+  return mapCourseFromDb(data);
 }
 
 async function updateCourse(courseId, patch) {
@@ -133,6 +149,9 @@ async function updateCourse(courseId, patch) {
   if (patch.history) dbPatch.history = patch.history;
   if (patch.purchaseActual !== undefined) dbPatch.purchase_actual = patch.purchaseActual;
   if (patch.receiptPhotoUrl !== undefined) dbPatch.receipt_photo_url = patch.receiptPhotoUrl;
+  if (patch.paid !== undefined) dbPatch.paid = patch.paid;
+  if (patch.paymentRef !== undefined) dbPatch.payment_ref = patch.paymentRef;
+  if (patch.paymentAmount !== undefined) dbPatch.payment_amount = patch.paymentAmount;
   const { error } = await supabase.from("courses").update(dbPatch).eq("id", courseId);
   if (error) throw error;
 }
@@ -665,8 +684,18 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
   const totalToPay = price + budgetValue;
   const isSimpleTrip = stops.length === 2;
 
+  const [paymentError, setPaymentError] = useState("");
+  const [payerType, setPayerType] = useState("client");
+  const [recipientName, setRecipientName] = useState("");
+  const [recipientPhone, setRecipientPhone] = useState("");
+
   const confirmBooking = async () => {
     if (!allSet) return;
+    if (payerType === "destinataire" && (!recipientName || !recipientPhone)) {
+      setPaymentError("Indiquez le nom et le numéro du destinataire qui paiera.");
+      return;
+    }
+    setPaymentError("");
     setPosting(true);
     try {
       const created = await createCourse({
@@ -680,11 +709,15 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
         distanceKm,
         needsPurchase,
         purchaseBudget: budgetValue,
+        payerType,
+        recipientName: payerType === "destinataire" ? recipientName : null,
+        recipientPhone: payerType === "destinataire" ? recipientPhone : null,
         history: [{ label: "Course créée", at: Date.now() }],
       });
       setPosting(false);
       onCreated(created);
     } catch (e) {
+      setPaymentError("Une erreur est survenue. Réessayez.");
       setPosting(false);
     }
   };
@@ -819,6 +852,37 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
         )}
       </div>
 
+      <div className="px-5 mt-5">
+        <p className="text-xs font-bold uppercase tracking-[0.14em] mb-3" style={{ color: C.inkSoft, fontFamily: FONT_DISPLAY }}>
+          Qui paiera cette course ?
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => setPayerType("client")}
+            className="rounded-xl p-3 text-left"
+            style={{ background: C.white, border: `2px solid ${payerType === "client" ? C.lagoon : C.line}` }}
+          >
+            <p className="text-xs font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Moi-même</p>
+            <p className="text-[10px] mt-0.5" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Je paie à la livraison</p>
+          </button>
+          <button
+            onClick={() => setPayerType("destinataire")}
+            className="rounded-xl p-3 text-left"
+            style={{ background: C.white, border: `2px solid ${payerType === "destinataire" ? C.clay : C.line}` }}
+          >
+            <p className="text-xs font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>Le destinataire</p>
+            <p className="text-[10px] mt-0.5" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>Il paie à la réception</p>
+          </button>
+        </div>
+
+        {payerType === "destinataire" && (
+          <div className="mt-3 space-y-3">
+            <TextField label="Nom du destinataire" value={recipientName} onChange={setRecipientName} placeholder="Nom de la personne qui recevra" icon={User} />
+            <TextField label="Téléphone du destinataire" value={recipientPhone} onChange={setRecipientPhone} placeholder="Numéro qui recevra la demande de paiement" icon={Phone} />
+          </div>
+        )}
+      </div>
+
       <div className="px-5 mt-6">
         <div className="rounded-2xl p-4" style={{ background: C.lagoonDeep }}>
           <div className="flex items-center justify-between">
@@ -849,9 +913,15 @@ function NewCourseFlow({ user, onCreated, onCancel }) {
       </div>
 
       <div className="px-5 mt-5">
+        {paymentError && (
+          <p className="text-xs mb-2 text-center" style={{ color: C.danger, fontFamily: FONT_BODY }}>{paymentError}</p>
+        )}
         <PrimaryButton onClick={confirmBooking} disabled={posting || !allSet}>
           {posting ? "Publication..." : !allSet ? "Complétez tous les points" : "Confirmer et publier la course"}
         </PrimaryButton>
+        <p className="text-[10px] text-center mt-2" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+          Le paiement se fera à l'arrivée du livreur, via Mobile Money (MTN, Moov)
+        </p>
       </div>
 
       {pickerIndex !== null && (
@@ -934,6 +1004,7 @@ function CourseCard({ course, highlight, onCancel, onReport }) {
     en_attente: "zem",
     acceptee: "lagoon",
     en_cours: "clay",
+    arrivee: course.paid ? "lagoon" : "clay",
     livree: "ink",
     annulee: "danger",
   }[course.status];
@@ -941,12 +1012,14 @@ function CourseCard({ course, highlight, onCancel, onReport }) {
     en_attente: "En attente d'un livreur",
     acceptee: "Livreur en route",
     en_cours: "Livraison en cours",
+    arrivee: course.paid ? "Payé, en attente de remise" : "Livreur arrivé — paiement requis",
     livree: "Livrée",
     annulee: "Annulée",
   }[course.status];
 
   const canCancel = onCancel && (course.status === "en_attente" || course.status === "acceptee");
   const canReport = onReport && course.status === "livree";
+  const canPayNow = course.status === "arrivee" && !course.paid && course.payerType !== "destinataire";
 
   return (
     <div className="rounded-2xl p-4" style={{ background: C.white, border: `1px solid ${highlight ? C.zem : C.line}`, borderWidth: highlight ? 2 : 1 }}>
@@ -963,6 +1036,15 @@ function CourseCard({ course, highlight, onCancel, onReport }) {
         <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
           {course.distanceKm.toFixed(1)} km
         </p>
+      )}
+      {canPayNow && (
+        <a
+          href={`#pay=${course.id}`}
+          className="w-full mt-3 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center"
+          style={{ background: C.clay, color: C.white, fontFamily: FONT_DISPLAY }}
+        >
+          Payer {course.price.toLocaleString()} FCFA maintenant
+        </a>
       )}
       {course.stops.length > 2 && (
         <p className="text-[10px] mt-1" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
@@ -1675,6 +1757,19 @@ function LivreurApp({ user, onLogout }) {
     }
   };
 
+  const markArrived = async (course) => {
+    setBusyId(course.id);
+    try {
+      await updateCourse(course.id, {
+        status: "arrivee",
+        history: [...course.history, { label: "Livreur arrivé à destination", at: Date.now() }],
+      });
+    } finally {
+      setBusyId(null);
+      load();
+    }
+  };
+
   const finalizeDelivery = async (course) => {
     setBusyId(course.id);
     try {
@@ -1708,13 +1803,17 @@ function LivreurApp({ user, onLogout }) {
       }
       return;
     }
-    // en_cours → livrée
-    if (course.needsPurchase) {
-      // ouvre le modal de déclaration du montant réel avant de finaliser
-      setPurchaseCourse(course);
-    } else {
-      await finalizeDelivery(course);
+    if (course.status === "en_cours") {
+      if (course.needsPurchase && course.purchaseActual == null) {
+        // ouvre le modal de déclaration du montant réel avant de marquer l'arrivée
+        setPurchaseCourse(course);
+      } else {
+        await markArrived(course);
+      }
+      return;
     }
+    // status === "arrivee" et paiement confirmé → livrée
+    await finalizeDelivery(course);
   };
 
   const activeMine = mine.filter((c) => c.status !== "livree");
@@ -1772,32 +1871,63 @@ function LivreurApp({ user, onLogout }) {
                   Vos courses en cours
                 </p>
                 <div className="space-y-3">
-                  {activeMine.map((c) => (
-                    <div key={c.id} className="rounded-2xl p-4" style={{ background: C.white, border: `2px solid ${C.zem}` }}>
-                      <div className="flex items-center justify-between mb-2">
-                        <Tag tone={c.status === "acceptee" ? "lagoon" : "clay"}>
-                          {c.status === "acceptee" ? "À récupérer" : "En livraison"}
-                        </Tag>
-                        <span className="text-sm font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{c.price.toLocaleString()} F</span>
+                  {activeMine.map((c) => {
+                    const statusLabel = { acceptee: "À récupérer", en_cours: "En route", arrivee: "En attente de paiement" }[c.status];
+                    const statusTone = { acceptee: "lagoon", en_cours: "clay", arrivee: "zem" }[c.status];
+                    const buttonLabel = {
+                      acceptee: "Marquer comme récupéré",
+                      en_cours: "Je suis arrivé à destination",
+                      arrivee: c.paid ? "Confirmer la remise du colis" : "En attente du paiement du client...",
+                    }[c.status];
+                    const buttonDisabled = busyId === c.id || (c.status === "arrivee" && !c.paid);
+
+                    return (
+                      <div key={c.id} className="rounded-2xl p-4" style={{ background: C.white, border: `2px solid ${C.zem}` }}>
+                        <div className="flex items-center justify-between mb-2">
+                          <Tag tone={statusTone}>{statusLabel}</Tag>
+                          <span className="text-sm font-bold" style={{ color: C.clay, fontFamily: FONT_DISPLAY }}>{c.price.toLocaleString()} F</span>
+                        </div>
+                        <RouteDots />
+                        <div className="flex justify-between text-xs mt-1 gap-2" style={{ fontFamily: FONT_BODY }}>
+                          <span style={{ color: C.ink }} className="truncate">{shortLabel(c.stops[0])}</span>
+                          <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(c.stops[c.stops.length - 1])}</span>
+                        </div>
+                        <p className="text-[11px] mt-2" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
+                          {c.payerType === "destinataire"
+                            ? `Destinataire (paie) : ${c.recipientName} · ${c.recipientPhone}`
+                            : `Client : ${c.clientName} · ${c.clientPhone}`}
+                        </p>
+                        {c.status === "arrivee" && !c.paid && (
+                          <>
+                            <div className="mt-2 px-2.5 py-2 rounded-lg" style={{ background: `${C.zem}22` }}>
+                              <p className="text-[10px] leading-snug" style={{ color: C.ink, fontFamily: FONT_BODY }}>
+                                Ne remettez pas le colis avant que le paiement soit confirmé ici.
+                              </p>
+                            </div>
+                            <a
+                              href={`https://wa.me/${(c.payerType === "destinataire" ? c.recipientPhone : c.clientPhone).replace(/[^0-9]/g, "")}?text=${encodeURIComponent(
+                                `Bonjour, votre livreur Manhïa est arrivé. Veuillez payer ${c.price.toLocaleString()} FCFA via ce lien pour recevoir votre colis : ${window.location.origin}/#pay=${c.id}`
+                              )}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="w-full mt-2 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2"
+                              style={{ background: "#25D366", color: C.white, fontFamily: FONT_DISPLAY }}
+                            >
+                              <Phone size={13} /> Envoyer le lien de paiement
+                            </a>
+                          </>
+                        )}
+                        <button
+                          onClick={() => advanceCourse(c)}
+                          disabled={buttonDisabled}
+                          className="w-full mt-3 py-2.5 rounded-xl text-sm font-bold"
+                          style={{ background: buttonDisabled && c.status === "arrivee" ? C.line : C.lagoon, color: buttonDisabled && c.status === "arrivee" ? C.inkSoft : C.white, fontFamily: FONT_DISPLAY }}
+                        >
+                          {busyId === c.id ? "..." : buttonLabel}
+                        </button>
                       </div>
-                      <RouteDots />
-                      <div className="flex justify-between text-xs mt-1 gap-2" style={{ fontFamily: FONT_BODY }}>
-                        <span style={{ color: C.ink }} className="truncate">{shortLabel(c.stops[0])}</span>
-                        <span style={{ color: C.ink }} className="truncate text-right">{shortLabel(c.stops[c.stops.length - 1])}</span>
-                      </div>
-                      <p className="text-[11px] mt-2" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-                        Client : {c.clientName} · {c.clientPhone}
-                      </p>
-                      <button
-                        onClick={() => advanceCourse(c)}
-                        disabled={busyId === c.id}
-                        className="w-full mt-3 py-2.5 rounded-xl text-sm font-bold"
-                        style={{ background: C.lagoon, color: C.white, fontFamily: FONT_DISPLAY }}
-                      >
-                        {busyId === c.id ? "..." : c.status === "acceptee" ? "Marquer comme récupéré" : "Confirmer la livraison"}
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1958,7 +2088,7 @@ function LivreurApp({ user, onLogout }) {
             });
             const refreshed = { ...purchaseCourse, purchaseActual: actual };
             setPurchaseCourse(null);
-            await finalizeDelivery(refreshed);
+            await markArrived(refreshed);
           }}
         />
       )}
@@ -2188,189 +2318,4 @@ function AdminPage() {
                     style={{ background: C.clay, color: C.white, fontFamily: FONT_DISPLAY }}
                   >
                     Réinitialiser
-                  </button>
-                  <button
-                    onClick={async () => { await markPasswordRequestTreated(p.id); load(); }}
-                    className="flex-1 py-2 rounded-xl text-xs font-bold"
-                    style={{ background: C.white, border: `1px solid ${C.line}`, color: C.inkSoft, fontFamily: FONT_DISPLAY }}
-                  >
-                    Marquer traité
-                  </button>
-                </div>
-              )}
-            </div>
-          ))
-        )}
-      </div>
-
-      {resetTarget && (
-        <ResetPasswordModal
-          request={resetTarget}
-          onClose={() => setResetTarget(null)}
-          onDone={async () => { setResetTarget(null); load(); }}
-        />
-      )}
-    </div>
-  );
-}
-
-function ResetPasswordModal({ request, onClose, onDone }) {
-  const [newPassword, setNewPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
-
-  const submit = async () => {
-    if (!newPassword) {
-      setError("Indiquez un nouveau mot de passe.");
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await resetUserPassword(request.phone, newPassword);
-      await markPasswordRequestTreated(request.id);
-      setDone(true);
-    } catch {
-      setError("Erreur. Vérifiez que ce numéro correspond à un compte existant.");
-      setSubmitting(false);
-    }
-  };
-
-  const whatsappNumber = request.phone.replace(/[^0-9]/g, "");
-  const whatsappMessage = encodeURIComponent(
-    `Bonjour ${request.name}, votre nouveau mot de passe Manhïa est : ${newPassword}\n\nVous pouvez vous connecter avec ce mot de passe dès maintenant.`
-  );
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(34,32,27,0.5)" }}>
-      <div className="w-full rounded-t-3xl p-5 pb-8" style={{ background: C.white }}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-base font-bold" style={{ color: C.ink, fontFamily: FONT_DISPLAY }}>
-            {done ? "Mot de passe réinitialisé" : "Nouveau mot de passe"}
-          </h2>
-          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
-        </div>
-
-        {done ? (
-          <>
-            <div className="py-2 text-center mb-4">
-              <CheckCircle2 size={28} color={C.lagoon} className="mx-auto mb-2" />
-              <p className="text-xs leading-snug" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-                Communiquez ce mot de passe à {request.name} pour qu'il/elle puisse se reconnecter.
-              </p>
-            </div>
-            <a
-              href={`https://wa.me/${whatsappNumber}?text=${whatsappMessage}`}
-              target="_blank"
-              rel="noreferrer"
-              onClick={onDone}
-              className="w-full py-3.5 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
-              style={{ background: "#25D366", color: C.white, fontFamily: FONT_DISPLAY }}
-            >
-              <Phone size={16} /> Envoyer par WhatsApp
-            </a>
-            <button
-              onClick={onDone}
-              className="w-full mt-3 py-3 rounded-2xl text-xs font-semibold"
-              style={{ background: C.white, border: `1px solid ${C.line}`, color: C.inkSoft, fontFamily: FONT_DISPLAY }}
-            >
-              Fermer sans envoyer
-            </button>
-          </>
-        ) : (
-          <>
-            <p className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: FONT_BODY }}>
-              Pour {request.name} ({request.phone})
-            </p>
-            <TextField label="Nouveau mot de passe" value={newPassword} onChange={setNewPassword} placeholder="Sera envoyé par WhatsApp ensuite" />
-            {error && <p className="text-xs mt-3" style={{ color: C.danger, fontFamily: FONT_BODY }}>{error}</p>}
-            <div className="mt-5">
-              <PrimaryButton onClick={submit} disabled={submitting}>
-                {submitting ? "..." : "Réinitialiser le mot de passe"}
-              </PrimaryButton>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-export default function ManhiaPrototype() {
-  const [user, setUser] = useState(() => loadSession());
-  const [isAdminRoute, setIsAdminRoute] = useState(() => window.location.hash === "#admin");
-
-  useEffect(() => {
-    const onHashChange = () => setIsAdminRoute(window.location.hash === "#admin");
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
-
-  const handleAuth = (u) => {
-    setUser(u);
-    saveSession(u);
-  };
-
-  const handleLogout = () => {
-    setUser(null);
-    saveSession(null);
-  };
-
-  const handleVerificationSubmitted = () => {
-    const updated = { ...user, verificationStatus: "en_attente_review" };
-    setUser(updated);
-    saveSession(updated);
-  };
-
-  // Pendant qu'un livreur attend une décision sur sa vérification, on revérifie
-  // périodiquement son statut réel en base, pour éviter qu'il reste bloqué
-  // sur un statut périmé après une validation admin.
-  useEffect(() => {
-    if (!user || user.role !== "livreur" || user.verificationStatus === "verifie") return;
-
-    const interval = setInterval(async () => {
-      const fresh = await findUserByPhone(user.phone);
-      if (fresh && fresh.verification_status !== user.verificationStatus) {
-        const updated = { ...user, verificationStatus: fresh.verification_status };
-        setUser(updated);
-        saveSession(updated);
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [user]);
-
-  if (isAdminRoute) {
-    return (
-      <div className="min-h-screen" style={{ background: C.sand }}>
-        <div className="max-w-md mx-auto shadow-2xl min-h-screen" style={{ background: C.sand }}>
-          <AdminPage />
-        </div>
-      </div>
-    );
-  }
-
-  const livreurNeedsVerification =
-    user && user.role === "livreur" && user.verificationStatus !== "verifie";
-
-  return (
-    <div className="min-h-screen" style={{ background: C.sand }}>
-      <div className="max-w-md mx-auto shadow-2xl min-h-screen" style={{ background: C.sand }}>
-        {!user ? (
-          <AuthScreen onAuth={handleAuth} />
-        ) : user.role === "client" ? (
-          <ClientApp user={user} onLogout={handleLogout} />
-        ) : livreurNeedsVerification ? (
-          <LivreurVerificationScreen
-            user={user}
-            status={user.verificationStatus === "en_attente" ? "form" : user.verificationStatus}
-            onSubmitted={handleVerificationSubmitted}
-            onLogout={handleLogout}
-          />
-        ) : (
-          <LivreurApp user={user} onLogout={handleLogout} />
-        )}
-      </div>
-    </div>
-  );
-}
+                  </bu
