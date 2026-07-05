@@ -34,7 +34,10 @@ export function openFedaPayCheckout({ amount, description, customer }) {
           firstname: customer.firstname || "Client",
           lastname: customer.lastname || "Manhïa",
           email: customer.email || "client@manhia.app",
-          phone_number: customer.phone_number,
+          phone_number: {
+            number: (customer.phone_number || "").replace(/[^0-9]/g, ""),
+            country: "bj",
+          },
         },
         currency: { iso: "XOF" },
         onComplete: (resp) => {
@@ -50,4 +53,3 @@ export function openFedaPayCheckout({ amount, description, customer }) {
     }
   });
 }
-
