@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from "react-leaflet";
 import L from "leaflet";
-import { Search, X, Crosshair, Check } from "lucide-react";
+import { Search, X, Crosshair, Check, MapPin } from "lucide-react";
 
 /* ===========================================================
    LocationPicker — sélection de lieu sur carte OpenStreetMap
@@ -123,13 +123,15 @@ const FONT_BODY = "'Inter', sans-serif";
  *  - onConfirm: (place) => void   où place = {label, lat, lng}
  *  - onClose: () => void
  */
-export default function LocationPickerModal({ label, color = "depart", initialPosition, onConfirm, onClose }) {
+export default function LocationPickerModal({ label, color = "depart", initialPosition, onConfirm, onClose, favorites = [], onSaveFavorite }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [noResults, setNoResults] = useState(false);
   const [selected, setSelected] = useState(initialPosition || null);
   const [addressLabel, setAddressLabel] = useState(initialPosition?.label || "");
+  const [showSaveFavorite, setShowSaveFavorite] = useState(false);
+  const [favoriteName, setFavoriteName] = useState("");
   const debounceRef = useRef(null);
 
   const handleSearchChange = (value) => {
@@ -237,6 +239,25 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
           </p>
         )}
 
+        {favorites.length > 0 && (
+          <div className="flex gap-2 mt-2 overflow-x-auto pb-1">
+            {favorites.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => {
+                  setSelected({ lat: f.lat, lng: f.lng });
+                  setAddressLabel(f.addressLabel);
+                }}
+                className="shrink-0 px-3 py-2 rounded-xl flex items-center gap-1.5"
+                style={{ background: C.white, border: `1px solid ${C.line}` }}
+              >
+                <MapPin size={12} color={C.clay} />
+                <span className="text-xs font-semibold" style={{ color: C.ink, fontFamily: FONT_BODY }}>{f.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {results.length > 0 && (
           <div className="absolute left-4 right-4 mt-1 rounded-xl shadow-lg overflow-hidden" style={{ background: C.white, border: `1px solid ${C.line}`, zIndex: 1001 }}>
             {results.map((r, i) => (
@@ -305,6 +326,42 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
             📍 {addressLabel}
           </p>
         )}
+
+        {selected && onSaveFavorite && !showSaveFavorite && (
+          <button
+            onClick={() => setShowSaveFavorite(true)}
+            className="w-full mb-2 py-2 rounded-xl text-xs font-semibold"
+            style={{ background: C.sand, color: C.inkSoft, fontFamily: FONT_BODY }}
+          >
+            + Enregistrer comme adresse favorite
+          </button>
+        )}
+
+        {showSaveFavorite && (
+          <div className="mb-3 flex gap-2">
+            <input
+              value={favoriteName}
+              onChange={(e) => setFavoriteName(e.target.value)}
+              placeholder="Ex: Maison, Boutique..."
+              className="flex-1 rounded-xl px-3 py-2 text-sm outline-none"
+              style={{ background: C.sand, border: `1px solid ${C.line}`, color: C.ink, fontFamily: FONT_BODY }}
+            />
+            <button
+              onClick={() => {
+                if (favoriteName.trim()) {
+                  onSaveFavorite(favoriteName.trim(), { label: addressLabel, lat: selected.lat, lng: selected.lng });
+                  setShowSaveFavorite(false);
+                  setFavoriteName("");
+                }
+              }}
+              className="px-4 rounded-xl text-xs font-bold"
+              style={{ background: C.lagoon, color: C.white, fontFamily: FONT_DISPLAY }}
+            >
+              OK
+            </button>
+          </div>
+        )}
+
         <button
           onClick={confirm}
           disabled={!selected}
