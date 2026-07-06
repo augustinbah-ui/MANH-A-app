@@ -379,3 +379,68 @@ export default function LocationPickerModal({ label, color = "depart", initialPo
     </div>
   );
 }
+/* ===========================================================
+   AJOUT à faire dans LocationPicker.jsx (ne remplace pas le fichier,
+   à coller à la fin, après le composant LocationPickerModal existant)
+=========================================================== */
+
+// Icône spécifique pour le marqueur "livreur en mouvement"
+function makeLivreurIcon() {
+  return L.divIcon({
+    className: "",
+    html: `<div style="
+      width: 34px; height: 34px; border-radius: 50%;
+      background: #C86A3E; border: 3px solid white;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.4);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+    ">🛵</div>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+  });
+}
+
+const LIVREUR_ICON = makeLivreurIcon();
+
+/**
+ * TrackingMap — carte en lecture seule montrant :
+ *  - le point de départ et d'arrivée de la course (marqueurs fixes)
+ *  - la position en direct du livreur (marqueur mobile, recentré automatiquement)
+ *
+ * props:
+ *  - stops: [{lat, lng, label}, ...] (départ, éventuels arrêts, arrivée)
+ *  - livreurPosition: {lat, lng} | null
+ */
+export function TrackingMap({ stops, livreurPosition }) {
+  const first = stops[0];
+  const last = stops[stops.length - 1];
+  const center = livreurPosition
+    ? [livreurPosition.lat, livreurPosition.lng]
+    : first?.lat
+    ? [first.lat, first.lng]
+    : COTONOU_CENTER;
+
+  return (
+    <div style={{ height: "100%", width: "100%" }}>
+      <MapContainer center={center} zoom={14} style={{ height: "100%", width: "100%" }}>
+        <TileLayer
+          attribution='&copy; OpenStreetMap contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {stops.map((s, i) => {
+          if (!s?.lat) return null;
+          const isFirst = i === 0;
+          const isLast = i === stops.length - 1;
+          const icon = isFirst ? ICONS.depart : isLast ? ICONS.arrivee : ICONS.arret;
+          return <Marker key={i} position={[s.lat, s.lng]} icon={icon} />;
+        })}
+        {livreurPosition && (
+          <>
+            <Marker position={[livreurPosition.lat, livreurPosition.lng]} icon={LIVREUR_ICON} />
+            <RecenterMap position={[livreurPosition.lat, livreurPosition.lng]} />
+          </>
+        )}
+      </MapContainer>
+    </div>
+  );
+}
